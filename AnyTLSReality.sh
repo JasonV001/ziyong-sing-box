@@ -11,55 +11,25 @@ SING_BOX_CONF_DIR="/usr/local/etc/sing-box"
 SING_BOX_CONF="$SING_BOX_CONF_DIR/config.json"
 SERVICE_FILE="/etc/systemd/system/sing-box.service"
 
+# 极简依赖检查：只检查命令，不执行 apt/yum/apk
 install_pkgs() {
-    local PKGS_DEB=(curl wget tar jq openssl xxd)
-    local PKGS_RHEL=(curl wget tar jq openssl vim-common)
-    local PKGS_ALPINE=(bash curl wget tar jq openssl xxd)
+    local CMDS=(bash curl wget tar openssl xxd)
 
-    if [[ -f /etc/os-release ]]; then
-        . /etc/os-release
-        local OS_ID=${ID,,}
-        local OS_LIKE=${ID_LIKE,,}
-    else
-        echo -e "${RED}无法检测系统类型！${NC}"
+    local missing=()
+    for c in "${CMDS[@]}"; do
+        if ! command -v "$c" >/dev/null 2>&1; then
+            missing+=("$c")
+        fi
+    done
+
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        echo -e "${RED}缺少以下必需命令，请手动安装后再运行本脚本：${NC}"
+        printf '  - %s\n' "${missing[@]}"
+        echo
+        echo "Debian/Ubuntu 示例：apt-get install -y ${missing[*]}"
+        echo "CentOS/RHEL 示例：yum install -y ${missing[*]}"
+        echo "Alpine 示例：apk add --no-cache ${missing[*]}"
         exit 1
-    fi
-
-    local SUPPORTED=("debian" "ubuntu" "centos" "rhel" "rocky" "almalinux" "fedora" "alpine")
-    if ! [[ " ${SUPPORTED[*]} " =~ " ${OS_ID} " ]] && ! [[ " ${SUPPORTED[*]} " =~ " ${OS_LIKE} " ]]; then
-        echo -e "${RED}不支持的系统类型: $OS_ID${NC}"
-        exit 1
-    fi
-
-    if [[ "$OS_ID" =~ (debian|ubuntu) ]] || [[ "$OS_LIKE" =~ (debian|ubuntu) ]]; then
-        local MISSING=()
-        for pkg in "${PKGS_DEB[@]}"; do
-            dpkg -s "$pkg" &>/dev/null || MISSING+=("$pkg")
-        done
-        if [[ ${#MISSING[@]} -gt 0 ]]; then
-            apt-get update -y -qq
-            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${MISSING[@]}"
-        fi
-    elif [[ "$OS_ID" =~ (centos|rhel|rocky|almalinux|fedora) ]] || [[ "$OS_LIKE" =~ (rhel|fedora|centos) ]]; then
-        local PKG_MGR="yum"
-        command -v dnf &>/dev/null && PKG_MGR="dnf"
-        local MISSING=()
-        for pkg in "${PKGS_RHEL[@]}"; do
-            rpm -q "$pkg" &>/dev/null || MISSING+=("$pkg")
-        done
-        if [[ ${#MISSING[@]} -gt 0 ]]; then
-            $PKG_MGR makecache -q
-            $PKG_MGR install -y "${MISSING[@]}"
-        fi
-    elif [[ "$OS_ID" == "alpine" || "$OS_LIKE" == "alpine" ]]; then
-        local MISSING=()
-        for pkg in "${PKGS_ALPINE[@]}"; do
-            apk info -e "$pkg" &>/dev/null || MISSING+=("$pkg")
-        done
-        if [[ ${#MISSING[@]} -gt 0 ]]; then
-            apk update -q
-            apk add --no-cache "${MISSING[@]}"
-        fi
     fi
 }
 
@@ -283,7 +253,7 @@ main() {
     write_config
     write_service
     show_info
-    echo -e "${CYAN}安装完成，服务已启动。如有问题请执行：journalctl -u sing-box -e${NC}"
+    echo -e "${CYAN}安装完成，服务已启动。如有问题可执行：journalctl -u sing-box -e${NC}"
 }
 
 main
