@@ -12,9 +12,12 @@ bash /usr/local/bin/anytls-reality.sh
 ```
 </details>
 
+# 手动开机重启sing-box
+
 ```
 
 ps aux | grep sing-box  # 查看进程是否存在
+ps aux | grep anytls
 
 ```
 
