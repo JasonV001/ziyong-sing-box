@@ -25,3 +25,15 @@ ps aux | grep anytls
 ```
 nohup /usr/local/bin/sing-box run -c /usr/local/etc/sing-box/reality.json
 ```
+
+```
+nohup "/usr/local/bin/anytls-server" -l "0.0.0.0:端口" -p "anytls密码"
+```
+
+
+
+
+
+```
+😆
+```
