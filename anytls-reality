@@ -152,11 +152,13 @@ get_anytls_arch() {
 }
 
 get_anytls_latest_version() {
-  local v
-  v=$(curl -s "https://api.github.com/repos/anytls/anytls-go/releases/latest" | grep -oP '"tag_name": "\K[^"]+')
-  v=${v#v}
+  # 从 GitHub API 提取 tag_name，去掉可能的 v 前缀
+  local raw v
+  raw=$(curl -s "https://api.github.com/repos/anytls/anytls-go/releases/latest" | grep '"tag_name"' | head -n 1)
+  v=$(echo "$raw" | sed -n 's/.*"tag_name":[[:space:]]*"\(v\?\([0-9.]\+\)\)".*/\2/p')
   if [[ -z "$v" ]]; then
-    echo -e "${WARNING} 无法获取 AnyTLS 最新版本，使用默认 0.0.8"
+    # 这里只往 stderr 打一行日志，不影响函数返回值
+    echo "[WARN] 无法获取 AnyTLS 最新版本，使用默认版本 0.0.8" >&2
     echo "0.0.8"
   else
     echo "$v"
