@@ -345,7 +345,7 @@ view_anytls_config() {
 
   local host="$server_ip"
   [[ "$server_ip" == *:* ]] && host="[$server_ip]"
-  local uri="anytls://${password}@${host}:${listen_port}/?sni=${sni}&insecure=${insecure}"
+  local uri="anytls://${password}@${host}:${listen_port}/?sni=${sni}&insecure=${insecure}#AnyTls"
   echo
   echo -e "${CYAN}AnyTLS URI：${RESET}"
   echo -e "${YELLOW}${uri}${RESET}"
@@ -697,7 +697,7 @@ show_reality_info() {
 
   local host="$ip4"
   [[ "$ip4" == *:* ]] && host="[$ip4]"
-  local vless_uri="vless://${UUID}@${host}:${PORT}?security=reality&sni=${SNI}&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&flow=xtls-rprx-vision&type=tcp#Reality"
+  local vless_uri="vless://${UUID}@${host}:${PORT}?security=reality&sni=${SNI}&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&flow=xtls-rprx-vision&type=tcp#Vless-Reality"
   echo
   echo -e "${CYAN}VLESS Reality 导入链接：${RESET}"
   echo -e "${YELLOW}${vless_uri}${RESET}"
