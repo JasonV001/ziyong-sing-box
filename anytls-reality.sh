@@ -776,11 +776,12 @@ main_menu() {
     echo "2) 安装 / 重新安装 Reality (VLESS-Vision) 节点 (sing-box)"
     echo "3) 查看节点信息 (AnyTLS + Reality)"
     echo "4) 节点管理（启动 / 停止 / 重启 / 状态）"
-    echo "5) 重新下载/更新 sing-box 二进制"
-    echo "6) 更新本管理脚本"
-    echo "7) 卸载 AnyTLS 节点"
-    echo "8) 卸载 Reality 节点"
-    echo "9) 卸载全部节点与配置"
+    echo "5) 更新 AnyTLS 二进制"
+    echo "6) 重新下载/更新 sing-box 二进制"
+    echo "7) 更新本管理脚本"
+    echo "8) 卸载 AnyTLS 节点"
+    echo "9) 卸载 Reality 节点"
+    echo "10) 卸载全部节点与配置"
     echo "0) 退出"
     read -rp "请选择: " c
     case "$c" in
@@ -788,11 +789,12 @@ main_menu() {
       2) install_reality_flow ;;
       3) show_all_nodes_info ;;
       4) nodes_manage_menu ;;
-      5) install_singbox_core ;;
-      6) update_script ;;
-      7) uninstall_anytls ;;
-      8) uninstall_reality ;;
-      9) uninstall_all ;;
+      5) update_anytls ;
+      6) install_singbox_core ;;
+      7) update_script ;;
+      8) uninstall_anytls ;;
+      9) uninstall_reality ;;
+      10) uninstall_all ;;
       0) exit 0 ;;
       *) echo -e "${ERROR} 无效选项" ;;
     esac
