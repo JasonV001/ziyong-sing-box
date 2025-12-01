@@ -361,13 +361,17 @@ install_reality() {
 }
 
 show_info() {
+    # 自动检测机器公网 IP（IPv4 优先）
+    local IP4
+    IP4=$(curl -s4 icanhazip.com || curl -s4 ip.sb || hostname -I 2>/dev/null | awk '{print $1}')
+
     echo -e "${CYAN}=== 节点信息 ===${NC}"
 
     if [[ -f "$ANYTLS_INFO" ]]; then
         . "$ANYTLS_INFO"
-        echo -e "${YELLOW}AnyTLS (trojan)：${NC}"
-        echo "  协议: trojan"
-        echo "  地址: 你的服务器 IP"
+        echo -e "${YELLOW}AnyTLS 节点：${NC}"
+        echo "  协议: anytls"
+        echo "  地址: ${IP4:-你的服务器 IP}"
         echo "  端口: $PORT"
         echo "  密码: $PASSWORD"
         echo "  SNI : $SNI"
@@ -379,9 +383,9 @@ show_info() {
 
     if [[ -f "$REALITY_INFO" ]]; then
         . "$REALITY_INFO"
-        echo -e "${YELLOW}Reality (vless-vision)：${NC}"
+        echo -e "${YELLOW}Reality (vless-vision) 节点：${NC}"
         echo "  协议: vless"
-        echo "  地址: 你的服务器 IP"
+        echo "  地址: ${IP4:-你的服务器 IP}"
         echo "  端口: $PORT"
         echo "  UUID : $UUID"
         echo "  server_name: $SNI"
