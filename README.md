@@ -11,4 +11,10 @@ wget -N -O /usr/local/bin/anytls-reality.sh https://raw.githubusercontent.com/Ja
 bash /usr/local/bin/anytls-reality.sh
 ```
 </details>
+```
+ps aux | grep sing-box  # 查看进程是否存在
+```
 
+```
+nohup /usr/local/bin/sing-box run -c /usr/local/etc/sing-box/reality.json
+```
