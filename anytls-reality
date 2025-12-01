@@ -14,8 +14,8 @@ ANYTLS_INFO="$CONF_DIR/anytls.info"
 REALITY_INFO="$CONF_DIR/reality.info"
 ANYTLS_SERVICE="sing-box-anytls.service"
 REALITY_SERVICE="sing-box-reality.service"
-# 请把下面地址改成你实际的 Raw 链接
-SCRIPT_URL="https://raw.githubusercontent.com/JasonV001/ziyong-sing-box/refs/heads/main/AnyTLSReality.sh"
+# 请把下面地址改成你实际的 Raw 链接（保持和当前一致即可）
+SCRIPT_URL="https://raw.githubusercontent.com/JasonV001/ziyong-sing-box/refs/heads/main/anytls-reality"
 SCRIPT_PATH="/usr/local/bin/anytls-reality.sh"
 
 check_root() {
@@ -54,7 +54,8 @@ install_sing_box() {
 
     mkdir -p "$CONF_DIR"
 
-    local arch=$(uname -m)
+    local arch
+    arch=$(uname -m)
     local url="https://api.github.com/repos/SagerNet/sing-box/releases/latest"
     local download_url=""
 
@@ -122,7 +123,6 @@ prompt_anytls() {
         read -rp "监听端口 (默认 443): " ANYTLS_PORT
         ANYTLS_PORT=${ANYTLS_PORT:-443}
         if [[ $ANYTLS_PORT =~ ^[1-9][0-9]{0,4}$ && $ANYTLS_PORT -le 65535 ]]; then
-            # 如果已经有 Reality，避免端口相同
             if [[ -f "$REALITY_INFO" ]]; then
                 local r_port
                 r_port=$(grep '^PORT=' "$REALITY_INFO" 2>/dev/null | cut -d= -f2)
@@ -228,7 +228,6 @@ prompt_reality() {
         read -rp "监听端口 (默认 8443): " REALITY_PORT
         REALITY_PORT=${REALITY_PORT:-8443}
         if [[ $REALITY_PORT =~ ^[1-9][0-9]{0,4}$ && $REALITY_PORT -le 65535 ]]; then
-            # 如果已经有 AnyTLS，避免端口相同
             if [[ -f "$ANYTLS_INFO" ]]; then
                 local a_port
                 a_port=$(grep '^PORT=' "$ANYTLS_INFO" 2>/dev/null | cut -d= -f2)
@@ -241,7 +240,7 @@ prompt_reality() {
         else
             echo -e "${RED}端口范围 1-65535，请重新输入${NC}"
         fi
-    done`
+    done
 
     read -rp "真实站点域名（用于握手，例如 time.is）: " REAL_HOST
     if [[ -z "$REAL_HOST" ]]; then
@@ -353,7 +352,6 @@ install_reality() {
 }
 
 show_info() {
-    # 自动检测公网 IP（IPv4 优先）
     local IP4
     IP4=$(curl -s4 icanhazip.com || curl -s4 ip.sb || hostname -I 2>/dev/null | awk '{print $1}')
 
