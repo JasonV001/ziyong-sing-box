@@ -38,7 +38,7 @@ SINGBOX_REALITY_INFO="${SINGBOX_CONFIG_DIR}/reality.info"
 SINGBOX_REALITY_SERVICE="/etc/systemd/system/sing-box-reality.service"
 SINGBOX_CMD=""
 
-# 脚本自更新地址（按你实际仓库改）
+# 脚本自更新地址
 SCRIPT_URL="https://raw.githubusercontent.com/JasonV001/ziyong-sing-box/refs/heads/main/anytls-reality"
 SCRIPT_PATH="/usr/local/bin/anytls-reality.sh"
 
@@ -152,7 +152,6 @@ get_anytls_arch() {
 }
 
 get_anytls_latest_version() {
-  # 使用 sed 解析 tag_name，兼容 busybox grep
   local raw v
   raw=$(curl -s "https://api.github.com/repos/anytls/anytls-go/releases/latest" | grep '"tag_name"' | head -n 1)
   v=$(echo "$raw" | sed -n 's/.*"tag_name":[[:space:]]*"\(v\{0,1\}\([0-9.]\+\)\)".*/\2/p')
@@ -253,7 +252,7 @@ EOF
 
 create_anytls_service() {
   if ! has_systemctl; then
-    echo -e "${WARNING} 未检测到 systemctl，跳过创建 AnyTLS systemd 服务（Alpine/OpenRC 请自行写 service）"
+    echo -e "${WARNING} 未检测到 systemctl，使用后台进程方式运行 AnyTLS（适用于 Alpine 等无 systemd 系统）"
     return
   fi
 
@@ -280,37 +279,44 @@ EOF
 }
 
 start_anytls() {
-  if ! has_systemctl; then
-    echo -e "${WARNING} 无 systemd，无法通过 systemctl 启动 AnyTLS，请手动运行：${ANYTLS_INSTALL_DIR}/${ANYTLS_BINARY_NAME} ..."
-    return
-  fi
-  systemctl start anytls || true
-  sleep 1
-  if systemctl is-active --quiet anytls; then
-    echo -e "${INFO} AnyTLS 服务已启动"
+  if has_systemctl; then
+    systemctl start anytls || true
+    sleep 1
+    if systemctl is-active --quiet anytls; then
+      echo -e "${INFO} AnyTLS 服务已启动"
+    else
+      echo -e "${ERROR} AnyTLS 服务启动失败，请执行：journalctl -u anytls -n 20 --no-pager"
+    fi
   else
-    echo -e "${ERROR} AnyTLS 服务启动失败，请执行：journalctl -u anytls -n 20 --no-pager"
+    # 无 systemd：用 nohup 后台跑
+    pkill -f "${ANYTLS_BINARY_NAME} -l ${ANYTLS_LISTEN_ADDR}:${ANYTLS_LISTEN_PORT}" 2>/dev/null || true
+    nohup "${ANYTLS_INSTALL_DIR}/${ANYTLS_BINARY_NAME}" -l "${ANYTLS_LISTEN_ADDR}:${ANYTLS_LISTEN_PORT}" -p "${ANYTLS_PASSWORD}" >/var/log/anytls.log 2>&1 &
+    echo -e "${INFO} AnyTLS 已在后台启动（无 systemd），日志：/var/log/anytls.log"
   fi
 }
 
 stop_anytls() {
   if has_systemctl; then
     systemctl stop anytls 2>/dev/null || true
-    echo -e "${INFO} AnyTLS 服务已停止"
+    echo -e "${INFO} AnyTLS systemd 服务已停止"
+  else
+    pkill -f "${ANYTLS_BINARY_NAME} -l ${ANYTLS_LISTEN_ADDR}:${ANYTLS_LISTEN_PORT}" 2>/dev/null || true
+    echo -e "${INFO} AnyTLS 后台进程已停止"
   fi
 }
 
 restart_anytls() {
-  if ! has_systemctl; then
-    echo -e "${WARNING} 无 systemd，无法通过 systemctl 重启 AnyTLS"
-    return
-  fi
-  systemctl restart anytls 2>/dev/null || true
-  sleep 1
-  if systemctl is-active --quiet anytls; then
-    echo -e "${INFO} AnyTLS 服务已重启"
+  if has_systemctl; then
+    systemctl restart anytls 2>/dev/null || true
+    sleep 1
+    if systemctl is-active --quiet anytls; then
+      echo -e "${INFO} AnyTLS 服务已重启"
+    else
+      echo -e "${ERROR} AnyTLS 服务重启失败，请执行：journalctl -u anytls -n 20 --no-pager"
+    fi
   else
-    echo -e "${ERROR} AnyTLS 服务重启失败，请执行：journalctl -u anytls -n 20 --no-pager"
+    stop_anytls
+    start_anytls
   fi
 }
 
@@ -352,8 +358,8 @@ uninstall_anytls() {
     echo -e "${INFO} 已取消"
     return
   fi
+  stop_anytls
   if has_systemctl; then
-    systemctl stop anytls 2>/dev/null || true
     systemctl disable anytls 2>/dev/null || true
   fi
   rm -f "$ANYTLS_SERVICE_FILE"
@@ -393,7 +399,7 @@ get_singbox_arch_suffix() {
     armv7l) echo "linux-armv7" ;;
     amd64v3) echo "linux-amd64v3" ;;
     s390x) echo "linux-s390x" ;;
-    *) echo "";;
+    *) echo "" ;;
   esac
 }
 
@@ -404,7 +410,6 @@ install_singbox_core() {
     return 0
   fi
 
-  # 不再使用官方 systemd 脚本，自行下载二进制，兼容 Alpine
   check_cmds_or_exit curl wget tar
   local arch_suffix
   arch_suffix=$(get_singbox_arch_suffix)
@@ -577,12 +582,8 @@ EOF
 }
 
 write_reality_service() {
-  if ! has_systemctl; then
-    echo -e "${WARNING} 未检测到 systemctl，跳过创建 Reality systemd 服务（Alpine/OpenRC 请自行配置）"
-    return
-  fi
-
-  cat >"$SINGBOX_REALITY_SERVICE" <<EOF
+  if has_systemctl; then
+    cat >"$SINGBOX_REALITY_SERVICE" <<EOF
 [Unit]
 Description=sing-box Reality (vless-vision)
 After=network.target nss-lookup.target
@@ -598,9 +599,16 @@ LimitNOFILE=infinity
 WantedBy=multi-user.target
 EOF
 
-  systemctl daemon-reload
-  systemctl enable sing-box-reality.service >/dev/null 2>&1 || true
-  systemctl restart sing-box-reality.service || true
+    systemctl daemon-reload
+    systemctl enable sing-box-reality.service >/dev/null 2>&1 || true
+    systemctl restart sing-box-reality.service || true
+    echo -e "${INFO} Reality systemd 服务已创建/重启"
+  else
+    echo -e "${WARNING} 未检测到 systemctl，将以后台进程方式运行 Reality（适用于 Alpine 等无 systemd 系统）"
+    pkill -f "sing-box run -c ${SINGBOX_REALITY_CONF}" 2>/dev/null || true
+    nohup "${SINGBOX_CMD}" run -c "${SINGBOX_REALITY_CONF}" >/var/log/singbox-reality.log 2>&1 &
+    echo -e "${INFO} Reality 已在后台启动（无 systemd），日志：/var/log/singbox-reality.log"
+  fi
 }
 
 check_reality_config() {
@@ -670,6 +678,8 @@ uninstall_reality() {
   if has_systemctl; then
     systemctl stop sing-box-reality.service 2>/dev/null || true
     systemctl disable sing-box-reality.service 2>/dev/null || true
+  else
+    pkill -f "sing-box run -c ${SINGBOX_REALITY_CONF}" 2>/dev/null || true
   fi
   rm -f "$SINGBOX_REALITY_SERVICE"
   rm -f "$SINGBOX_REALITY_CONF" "$SINGBOX_REALITY_INFO"
@@ -689,30 +699,40 @@ nodes_manage_menu() {
   read -rp "请选择: " opt
   case "$opt" in
     1)
-      has_systemctl && systemctl start anytls 2>/dev/null || true
-      has_systemctl && systemctl start sing-box-reality.service 2>/dev/null || true
+      start_anytls
+      if has_systemctl; then
+        systemctl start sing-box-reality.service 2>/dev/null || true
+      else
+        pkill -f "sing-box run -c ${SINGBOX_REALITY_CONF}" 2>/dev/null || true
+        nohup "${SINGBOX_CMD}" run -c "${SINGBOX_REALITY_CONF}" >/var/log/singbox-reality.log 2>&1 &
+      fi
       ;;
     2)
-      has_systemctl && systemctl stop anytls 2>/dev/null || true
-      has_systemctl && systemctl stop sing-box-reality.service 2>/dev/null || true
+      stop_anytls
+      if has_systemctl; then
+        systemctl stop sing-box-reality.service 2>/dev/null || true
+      else
+        pkill -f "sing-box run -c ${SINGBOX_REALITY_CONF}" 2>/dev/null || true
+      fi
       ;;
     3)
-      has_systemctl && systemctl restart anytls 2>/dev/null || true
-      has_systemctl && systemctl restart sing-box-reality.service 2>/dev/null || true
+      restart_anytls
+      if has_systemctl; then
+        systemctl restart sing-box-reality.service 2>/dev/null || true
+      else
+        pkill -f "sing-box run -c ${SINGBOX_REALITY_CONF}" 2>/dev/null || true
+        nohup "${SINGBOX_CMD}" run -c "${SINGBOX_REALITY_CONF}" >/var/log/singbox-reality.log 2>&1 &
+      fi
       ;;
     4)
       if has_systemctl; then
         systemctl status anytls 2>/dev/null || echo "AnyTLS 服务不存在或未安装"
         systemctl status sing-box-reality.service 2>/dev/null || echo "Reality 服务不存在或未安装"
       else
-        echo -e "${WARNING} 无 systemd，无法查看 systemctl 状态"
+        echo -e "${WARNING} 无 systemd，无法使用 systemctl 查看状态；请通过 ps/日志自行确认进程。"
       fi
       ;;
   esac
-}
-
-update_singbox_kernel() {
-  install_singbox_core
 }
 
 update_script() {
@@ -735,28 +755,11 @@ uninstall_all() {
   fi
 
   if [[ -f "$ANYTLS_CONFIG_FILE" || -f "$ANYTLS_SERVICE_FILE" ]]; then
-    if has_systemctl; then
-      systemctl stop anytls 2>/dev/null || true
-      systemctl disable anytls 2>/dev/null || true
-    fi
-    rm -f "$ANYTLS_SERVICE_FILE"
-    rm -f "${ANYTLS_INSTALL_DIR}/${ANYTLS_BINARY_NAME}"
-    rm -rf "$ANYTLS_CONFIG_DIR"
+    uninstall_anytls
   fi
-
   if [[ -f "$SINGBOX_REALITY_CONF" || -f "$SINGBOX_REALITY_SERVICE" ]]; then
-    if has_systemctl; then
-      systemctl stop sing-box-reality.service 2>/dev/null || true
-      systemctl disable sing-box-reality.service 2>/dev/null || true
-    fi
-    rm -f "$SINGBOX_REALITY_SERVICE"
-    rm -f "$SINGBOX_REALITY_CONF" "$SINGBOX_REALITY_INFO"
+    uninstall_reality
   fi
-
-  if has_systemctl; then
-    systemctl daemon-reload
-  fi
-  echo -e "${INFO} 已卸载 AnyTLS / Reality 相关配置与服务"
 }
 
 show_all_nodes_info() {
@@ -773,7 +776,7 @@ main_menu() {
     echo "2) 安装 / 重新安装 Reality (VLESS-Vision) 节点 (sing-box)"
     echo "3) 查看节点信息 (AnyTLS + Reality)"
     echo "4) 节点管理（启动 / 停止 / 重启 / 状态）"
-    echo "5) 更新 sing-box 二进制（重新下载最新版本）"
+    echo "5) 重新下载/更新 sing-box 二进制"
     echo "6) 更新本管理脚本"
     echo "7) 卸载 AnyTLS 节点"
     echo "8) 卸载 Reality 节点"
