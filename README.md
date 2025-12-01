@@ -19,11 +19,12 @@ ps aux | grep sing-box  # 查看进程是否存在
 ps aux | grep anytls
 ```
 
-
+# reality重启
 ```
 nohup /usr/local/bin/sing-box run -c /usr/local/etc/sing-box/reality.json
 ```
 
+# AnyTLs重启
 ```
 nohup "/usr/local/bin/anytls-server" -l "0.0.0.0:端口" -p "anytls密码"
 ```
