@@ -16,3 +16,9 @@ wget -N -O /usr/local/bin/anytls-reality.sh https://raw.githubusercontent.com/Ja
   && bash /usr/local/bin/anytls-reality.sh
 ```
 </details>
+检查配置：
+sing-box check -c /usr/local/etc/sing-box/anytls.jsonsing-box check -c /usr/local/etc/sing-box/reality.json
+重启服务：
+systemctl restart sing-box-anytls.servicesystemctl restart sing-box-reality.service
+看状态：
+systemctl status sing
