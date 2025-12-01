@@ -25,8 +25,8 @@ check_root() {
     fi
 }
 
+# 极简依赖检查：只检查命令，不自动安装系统包
 install_pkgs() {
-    # 极简：只检查命令，不自动安装系统包
     local CMDS=(bash curl wget tar openssl xxd)
 
     local missing=()
@@ -175,11 +175,7 @@ write_anytls_config() {
       ],
       "tls": {
         "enabled": true,
-        "server_name": "$SNI",
-        "utls": {
-          "enabled": true,
-          "fingerprint": "chrome"
-        }
+        "server_name": "$SNI"
       }
     }
   ],
@@ -245,7 +241,7 @@ prompt_reality() {
         else
             echo -e "${RED}端口范围 1-65535，请重新输入${NC}"
         fi
-    done
+    done`
 
     read -rp "真实站点域名（用于握手，例如 time.is）: " REAL_HOST
     if [[ -z "$REAL_HOST" ]]; then
@@ -309,10 +305,6 @@ write_reality_config() {
           "short_id": [
             "$SHORT_ID"
           ]
-        },
-        "utls": {
-          "enabled": true,
-          "fingerprint": "chrome"
         }
       }
     }
@@ -361,7 +353,7 @@ install_reality() {
 }
 
 show_info() {
-    # 自动检测机器公网 IP（IPv4 优先）
+    # 自动检测公网 IP（IPv4 优先）
     local IP4
     IP4=$(curl -s4 icanhazip.com || curl -s4 ip.sb || hostname -I 2>/dev/null | awk '{print $1}')
 
