@@ -39,12 +39,13 @@ short_ids=()
 
 # 安装必需的软件包（按需精简，并支持 Alpine）
 function install_pkgs() {
-    # 运行时必要依赖：网络工具、JSON 处理、证书/加密、十六进制工具、定时任务等
-    local PKGS_DEB=(curl wget tar socat jq openssl xxd net-tools cron)
+    # 运行时必要依赖：下载、解压、JSON 处理、证书/加密、十六进制工具等
+    # 尽量少装依赖，其他功能（如 crontab、netstat）如果系统没有，则自动降级或跳过
+    local PKGS_DEB=(curl wget tar jq openssl xxd)
     # RHEL 系列中 xxd 由 vim-common 提供
-    local PKGS_RHEL=(curl wget tar socat jq openssl util-linux vim-common net-tools cronie)
+    local PKGS_RHEL=(curl wget tar jq openssl vim-common)
     # Alpine 采用 apk 包管理器，并默认不带 bash
-    local PKGS_ALPINE=(bash curl wget tar socat jq openssl xxd net-tools cronie)
+    local PKGS_ALPINE=(bash curl wget tar jq openssl xxd)
 
     if [[ -f /etc/os-release ]]; then
         . /etc/os-release
@@ -592,12 +593,20 @@ function set_listen_port() {
         new_listen_port=${new_listen_port:-443}
 
         if [[ $new_listen_port =~ ^[1-9][0-9]{0,4}$ && $new_listen_port -le 65535 ]]; then
-            check_result=$(netstat -tulpn | grep -E "\b${new_listen_port}\b")
+            # 优先使用 netstat，如无则尝试 ss；都没有则仅做格式校验，不强制检查占用
+            if command -v netstat >/dev/null 2>&1; then
+                check_result=$(netstat -tulpn 2>/dev/null | grep -E "\b${new_listen_port}\b")
+            elif command -v ss >/dev/null 2>&1; then
+                check_result=$(ss -tulpn 2>/dev/null | grep -E "\b${new_listen_port}\b")
+            else
+                check_result=""
+            fi
+
             if [[ -z "$check_result" ]]; then
                 echo "监听端口：$new_listen_port"
                 break
             else
-                echo -e "${RED}ERROR：端口已被占用，请选择其他端口！${NC}" >&2
+                echo -e "${RED}ERROR：端口可能已被占用，请选择其他端口！${NC}" >&2
             fi
         else
             echo -e "${RED}ERROR：端口范围1-65535，请重新输入！${NC}" >&2
