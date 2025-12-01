@@ -7,12 +7,26 @@ YELLOW='\033[0;33m'
 NC='\033[0m'
 
 SING_BOX_BIN="/usr/local/bin/sing-box"
-SING_BOX_CONF_DIR="/usr/local/etc/sing-box"
-SING_BOX_CONF="$SING_BOX_CONF_DIR/config.json"
-SERVICE_FILE="/etc/systemd/system/sing-box.service"
+CONF_DIR="/usr/local/etc/sing-box"
+ANYTLS_CONF="$CONF_DIR/anytls.json"
+REALITY_CONF="$CONF_DIR/reality.json"
+ANYTLS_INFO="$CONF_DIR/anytls.info"
+REALITY_INFO="$CONF_DIR/reality.info"
+ANYTLS_SERVICE="sing-box-anytls.service"
+REALITY_SERVICE="sing-box-reality.service"
+# 请把下面地址改成你实际的 Raw 链接
+SCRIPT_URL="https://raw.githubusercontent.com/JasonV001/ziyong-sing-box/refs/heads/main/AnyTLSReality.sh"
+SCRIPT_PATH="/usr/local/bin/anytls-reality.sh"
 
-# 极简依赖检查：只检查命令，不执行 apt/yum/apk
+check_root() {
+    if [[ $EUID -ne 0 ]]; then
+        echo -e "${RED}请使用 root 用户运行本脚本${NC}"
+        exit 1
+    fi
+}
+
 install_pkgs() {
+    # 极简：只检查命令，不自动安装系统包
     local CMDS=(bash curl wget tar openssl xxd)
 
     local missing=()
@@ -35,11 +49,10 @@ install_pkgs() {
 
 install_sing_box() {
     if [[ -x "$SING_BOX_BIN" ]]; then
-        echo "sing-box 已存在，跳过安装。"
         return
     fi
 
-    mkdir -p "$SING_BOX_CONF_DIR"
+    mkdir -p "$CONF_DIR"
 
     local arch=$(uname -m)
     local url="https://api.github.com/repos/SagerNet/sing-box/releases/latest"
@@ -47,19 +60,19 @@ install_sing_box() {
 
     case $arch in
         x86_64|amd64)
-            download_url=$(curl -s $url | grep -o "https://github.com[^\"']*linux-amd64.tar.gz" | head -n 1)
+            download_url=$(curl -s "$url" | grep -o "https://github.com[^\"']*linux-amd64.tar.gz" | head -n 1)
             ;;
         armv7l)
-            download_url=$(curl -s $url | grep -o "https://github.com[^\"']*linux-armv7.tar.gz" | head -n 1)
+            download_url=$(curl -s "$url" | grep -o "https://github.com[^\"']*linux-armv7.tar.gz" | head -n 1)
             ;;
         aarch64|arm64)
-            download_url=$(curl -s $url | grep -o "https://github.com[^\"']*linux-arm64.tar.gz" | head -n 1)
+            download_url=$(curl -s "$url" | grep -o "https://github.com[^\"']*linux-arm64.tar.gz" | head -n 1)
             ;;
         amd64v3)
-            download_url=$(curl -s $url | grep -o "https://github.com[^\"']*linux-amd64v3.tar.gz" | head -n 1)
+            download_url=$(curl -s "$url" | grep -o "https://github.com[^\"']*linux-amd64v3.tar.gz" | head -n 1)
             ;;
         s390x)
-            download_url=$(curl -s $url | grep -o "https://github.com[^\"']*linux-s390x.tar.gz" | head -n 1)
+            download_url=$(curl -s "$url" | grep -o "https://github.com[^\"']*linux-s390x.tar.gz" | head -n 1)
             ;;
         *)
             echo -e "${RED}不支持的架构：$arch${NC}"
@@ -103,37 +116,48 @@ gen_reality_keypair() {
     REALITY_PUBLIC_KEY="$pub"
 }
 
-ask_params() {
-    echo -e "${CYAN}=== AnyTLS & Reality 参数配置 ===${NC}"
+prompt_anytls() {
+    echo -e "${CYAN}=== AnyTLS (trojan) 参数配置 ===${NC}"
+    while true; do
+        read -rp "监听端口 (默认 443): " ANYTLS_PORT
+        ANYTLS_PORT=${ANYTLS_PORT:-443}
+        if [[ $ANYTLS_PORT =~ ^[1-9][0-9]{0,4}$ && $ANYTLS_PORT -le 65535 ]]; then
+            # 如果已经有 Reality，避免端口相同
+            if [[ -f "$REALITY_INFO" ]]; then
+                local r_port
+                r_port=$(grep '^PORT=' "$REALITY_INFO" 2>/dev/null | cut -d= -f2)
+                if [[ -n "$r_port" && "$r_port" == "$ANYTLS_PORT" ]]; then
+                    echo -e "${RED}当前 Reality 使用端口 $r_port，请选择不同端口${NC}"
+                    continue
+                fi
+            fi
+            break
+        else
+            echo -e "${RED}端口范围 1-65535，请重新输入${NC}"
+        fi
+    done
 
-    read -rp "监听端口 (默认 443): " LISTEN_PORT
-    LISTEN_PORT=${LISTEN_PORT:-443}
-
-    read -rp "真实域名（用于 Reality / SNI）: " REAL_HOST
-    if [[ -z "$REAL_HOST" ]]; then
-        echo -e "${RED}真实域名不能为空${NC}"
+    read -rp "SNI 域名（例如 time.is）: " ANYTLS_SNI
+    if [[ -z "$ANYTLS_SNI" ]]; then
+        echo -e "${RED}SNI 域名不能为空${NC}"
         exit 1
     fi
 
-    read -rp "Reality 验证用的 SNI（默认与真实域名相同）: " REALITY_SERVER_NAME
-    REALITY_SERVER_NAME=${REALITY_SERVER_NAME:-$REAL_HOST}
-
-    read -rp "Reality short_id（默认随机 8 位十六进制）: " REALITY_SHORT_ID
-    if [[ -z "$REALITY_SHORT_ID" ]]; then
-        REALITY_SHORT_ID=$(openssl rand -hex 4)
-    fi
-
     ANYTLS_PASSWORD=$(gen_uuid)
-    REALITY_UUID=$(gen_uuid)
 
-    echo -e "${YELLOW}AnyTLS 密码: ${ANYTLS_PASSWORD}${NC}"
-    echo -e "${YELLOW}Reality UUID: ${REALITY_UUID}${NC}"
+    cat >"$ANYTLS_INFO" <<EOF
+PORT=$ANYTLS_PORT
+SNI=$ANYTLS_SNI
+PASSWORD=$ANYTLS_PASSWORD
+EOF
 }
 
-write_config() {
-    mkdir -p "$SING_BOX_CONF_DIR"
+write_anytls_config() {
+    mkdir -p "$CONF_DIR"
 
-    cat >"$SING_BOX_CONF" <<EOF
+    . "$ANYTLS_INFO"
+
+    cat >"$ANYTLS_CONF" <<EOF
 {
   "log": {
     "level": "info"
@@ -143,44 +167,147 @@ write_config() {
       "type": "trojan",
       "tag": "anytls-in",
       "listen": "::",
-      "listen_port": $LISTEN_PORT,
+      "listen_port": $PORT,
       "users": [
         {
-          "password": "$ANYTLS_PASSWORD"
+          "password": "$PASSWORD"
         }
       ],
       "tls": {
         "enabled": true,
-        "server_name": "$REAL_HOST",
+        "server_name": "$SNI",
         "utls": {
           "enabled": true,
           "fingerprint": "chrome"
         }
       }
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
     },
+    {
+      "type": "block",
+      "tag": "block"
+    }
+  ]
+}
+EOF
+}
+
+write_anytls_service() {
+    cat >/etc/systemd/system/$ANYTLS_SERVICE <<EOF
+[Unit]
+Description=sing-box AnyTLS
+After=network.target nss-lookup.target
+
+[Service]
+ExecStart=$SING_BOX_BIN run -c $ANYTLS_CONF
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=infinity
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable "$ANYTLS_SERVICE" >/dev/null 2>&1 || true
+    systemctl restart "$ANYTLS_SERVICE"
+}
+
+install_anytls() {
+    install_sing_box
+    prompt_anytls
+    write_anytls_config
+    write_anytls_service
+    echo -e "${YELLOW}AnyTLS 节点已安装并启动${NC}"
+}
+
+prompt_reality() {
+    echo -e "${CYAN}=== Reality (vless-vision) 参数配置 ===${NC}"
+    while true; do
+        read -rp "监听端口 (默认 8443): " REALITY_PORT
+        REALITY_PORT=${REALITY_PORT:-8443}
+        if [[ $REALITY_PORT =~ ^[1-9][0-9]{0,4}$ && $REALITY_PORT -le 65535 ]]; then
+            # 如果已经有 AnyTLS，避免端口相同
+            if [[ -f "$ANYTLS_INFO" ]]; then
+                local a_port
+                a_port=$(grep '^PORT=' "$ANYTLS_INFO" 2>/dev/null | cut -d= -f2)
+                if [[ -n "$a_port" && "$a_port" == "$REALITY_PORT" ]]; then
+                    echo -e "${RED}当前 AnyTLS 使用端口 $a_port，请选择不同端口${NC}"
+                    continue
+                fi
+            fi
+            break
+        else
+            echo -e "${RED}端口范围 1-65535，请重新输入${NC}"
+        fi
+    done
+
+    read -rp "真实站点域名（用于握手，例如 time.is）: " REAL_HOST
+    if [[ -z "$REAL_HOST" ]]; then
+        echo -e "${RED}真实域名不能为空${NC}"
+        exit 1
+    fi
+
+    read -rp "Reality SNI（默认与真实域名相同）: " REALITY_SNI
+    REALITY_SNI=${REALITY_SNI:-$REAL_HOST}
+
+    read -rp "Reality short_id（默认随机 8 位十六进制）: " REALITY_SHORT_ID
+    if [[ -z "$REALITY_SHORT_ID" ]]; then
+        REALITY_SHORT_ID=$(openssl rand -hex 4)
+    fi
+
+    REALITY_UUID=$(gen_uuid)
+    gen_reality_keypair
+
+    cat >"$REALITY_INFO" <<EOF
+PORT=$REALITY_PORT
+REAL_HOST=$REAL_HOST
+SNI=$REALITY_SNI
+UUID=$REALITY_UUID
+PUBLIC_KEY=$REALITY_PUBLIC_KEY
+PRIVATE_KEY=$REALITY_PRIVATE_KEY
+SHORT_ID=$REALITY_SHORT_ID
+EOF
+}
+
+write_reality_config() {
+    mkdir -p "$CONF_DIR"
+    . "$REALITY_INFO"
+
+    cat >"$REALITY_CONF" <<EOF
+{
+  "log": {
+    "level": "info"
+  },
+  "inbounds": [
     {
       "type": "vless",
       "tag": "reality-in",
       "listen": "::",
-      "listen_port": $LISTEN_PORT,
+      "listen_port": $PORT,
       "users": [
         {
-          "uuid": "$REALITY_UUID",
+          "uuid": "$UUID",
           "flow": "xtls-rprx-vision"
         }
       ],
       "tls": {
         "enabled": true,
-        "server_name": "$REALITY_SERVER_NAME",
+        "server_name": "$SNI",
         "reality": {
           "enabled": true,
           "handshake": {
             "server": "$REAL_HOST",
             "server_port": 443
           },
-          "private_key": "$REALITY_PRIVATE_KEY",
+          "private_key": "$PRIVATE_KEY",
           "short_id": [
-            "$REALITY_SHORT_ID"
+            "$SHORT_ID"
           ]
         },
         "utls": {
@@ -204,15 +331,14 @@ write_config() {
 EOF
 }
 
-write_service() {
-    echo "配置 systemd 服务..."
-    cat >"$SERVICE_FILE" <<EOF
+write_reality_service() {
+    cat >/etc/systemd/system/$REALITY_SERVICE <<EOF
 [Unit]
-Description=sing-box service (AnyTLS & Reality)
+Description=sing-box Reality (vless-vision)
 After=network.target nss-lookup.target
 
 [Service]
-ExecStart=$SING_BOX_BIN run -c $SING_BOX_CONF
+ExecStart=$SING_BOX_BIN run -c $REALITY_CONF
 Restart=on-failure
 RestartSec=5s
 LimitNOFILE=infinity
@@ -222,38 +348,143 @@ WantedBy=multi-user.target
 EOF
 
     systemctl daemon-reload
-    systemctl enable sing-box.service >/dev/null 2>&1 || true
-    systemctl restart sing-box.service
+    systemctl enable "$REALITY_SERVICE" >/dev/null 2>&1 || true
+    systemctl restart "$REALITY_SERVICE"
+}
+
+install_reality() {
+    install_sing_box
+    prompt_reality
+    write_reality_config
+    write_reality_service
+    echo -e "${YELLOW}Reality 节点已安装并启动${NC}"
 }
 
 show_info() {
     echo -e "${CYAN}=== 节点信息 ===${NC}"
-    echo -e "${YELLOW}AnyTLS (trojan)：${NC}"
-    echo "  协议: trojan"
-    echo "  地址: 你的服务器 IP"
-    echo "  端口: $LISTEN_PORT"
-    echo "  密码: $ANYTLS_PASSWORD"
-    echo "  SNI : $REAL_HOST"
 
-    echo
-    echo -e "${YELLOW}Reality (vless-vision)：${NC}"
-    echo "  协议: vless"
-    echo "  UUID : $REALITY_UUID"
-    echo "  端口: $LISTEN_PORT"
-    echo "  server_name: $REALITY_SERVER_NAME"
-    echo "  reality 公钥: $REALITY_PUBLIC_KEY"
-    echo "  reality short_id: $REALITY_SHORT_ID"
+    if [[ -f "$ANYTLS_INFO" ]]; then
+        . "$ANYTLS_INFO"
+        echo -e "${YELLOW}AnyTLS (trojan)：${NC}"
+        echo "  协议: trojan"
+        echo "  地址: 你的服务器 IP"
+        echo "  端口: $PORT"
+        echo "  密码: $PASSWORD"
+        echo "  SNI : $SNI"
+        echo
+    else
+        echo "未安装 AnyTLS 节点"
+        echo
+    fi
+
+    if [[ -f "$REALITY_INFO" ]]; then
+        . "$REALITY_INFO"
+        echo -e "${YELLOW}Reality (vless-vision)：${NC}"
+        echo "  协议: vless"
+        echo "  地址: 你的服务器 IP"
+        echo "  端口: $PORT"
+        echo "  UUID : $UUID"
+        echo "  server_name: $SNI"
+        echo "  reality 公钥: $PUBLIC_KEY"
+        echo "  reality short_id: $SHORT_ID"
+        echo
+    else
+        echo "未安装 Reality 节点"
+        echo
+    fi
+}
+
+nodes_manage_menu() {
+    echo -e "${CYAN}=== 节点管理 ===${NC}"
+    echo "1) 启动全部节点"
+    echo "2) 停止全部节点"
+    echo "3) 重启全部节点"
+    echo "4) 查看状态"
+    echo "0) 返回主菜单"
+    read -rp "请选择: " opt
+    case "$opt" in
+        1)
+            systemctl start "$ANYTLS_SERVICE" 2>/dev/null || true
+            systemctl start "$REALITY_SERVICE" 2>/dev/null || true
+            ;;
+        2)
+            systemctl stop "$ANYTLS_SERVICE" 2>/dev/null || true
+            systemctl stop "$REALITY_SERVICE" 2>/dev/null || true
+            ;;
+        3)
+            systemctl restart "$ANYTLS_SERVICE" 2>/dev/null || true
+            systemctl restart "$REALITY_SERVICE" 2>/dev/null || true
+            ;;
+        4)
+            systemctl status "$ANYTLS_SERVICE" 2>/dev/null || echo "AnyTLS 服务不存在或未安装"
+            systemctl status "$REALITY_SERVICE" 2>/dev/null || echo "Reality 服务不存在或未安装"
+            ;;
+    esac
+}
+
+enable_bbr() {
+    if grep -q "net.core.default_qdisc=fq" /etc/sysctl.conf 2>/dev/null; then
+        echo "BBR 已配置，跳过。"
+        return
+    fi
+    echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
+    echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
+    sysctl -p >/dev/null 2>&1 || true
+    echo "BBR 配置完成（如内核支持则生效）。"
+}
+
+update_script() {
+    if [[ -z "$SCRIPT_URL" ]]; then
+        echo -e "${RED}脚本更新地址未配置${NC}"
+        return
+    fi
+    wget -N -O "$SCRIPT_PATH" "$SCRIPT_URL"
+    chmod +x "$SCRIPT_PATH"
+    echo "脚本已更新，重新运行即可生效。"
+}
+
+uninstall_all() {
+    systemctl stop "$ANYTLS_SERVICE" 2>/dev/null || true
+    systemctl stop "$REALITY_SERVICE" 2>/dev/null || true
+    systemctl disable "$ANYTLS_SERVICE" "$REALITY_SERVICE" 2>/dev/null || true
+    rm -f /etc/systemd/system/"$ANYTLS_SERVICE" /etc/systemd/system/"$REALITY_SERVICE"
+    systemctl daemon-reload
+
+    rm -f "$ANYTLS_CONF" "$REALITY_CONF" "$ANYTLS_INFO" "$REALITY_INFO"
+    echo "已卸载 AnyTLS / Reality 配置和服务（sing-box 二进制保留）。"
+}
+
+main_menu() {
+    while true; do
+        echo -e "${CYAN}=== AnyTLS & Reality 管理脚本 ===${NC}"
+        echo "1) 安装 / 重新安装 AnyTLS 节点"
+        echo "2) 安装 / 重新安装 Reality (vless-vision) 节点"
+        echo "3) 查看节点信息"
+        echo "4) 节点管理（启动 / 停止 / 重启 / 状态）"
+        echo "5) 开启 BBR（简单内核参数配置）"
+        echo "6) 更新脚本"
+        echo "7) 卸载全部节点与配置"
+        echo "0) 退出"
+        read -rp "请选择: " choice
+        case "$choice" in
+            1) install_anytls ;;
+            2) install_reality ;;
+            3) show_info ;;
+            4) nodes_manage_menu ;;
+            5) enable_bbr ;;
+            6) update_script ;;
+            7) uninstall_all ;;
+            0) exit 0 ;;
+            *) echo -e "${RED}无效选项${NC}" ;;
+        esac
+        echo
+    done
 }
 
 main() {
+    check_root
     install_pkgs
-    install_sing_box
-    ask_params
-    gen_reality_keypair
-    write_config
-    write_service
-    show_info
-    echo -e "${CYAN}安装完成，服务已启动。如有问题可执行：journalctl -u sing-box -e${NC}"
+    main_menu
 }
 
 main
