@@ -62,7 +62,6 @@ detect_distro() {
 }
 
 install_missing_pkgs() {
-  # $@: 包名数组（统一用常见名）
   local pkgs=("$@")
   local to_install=()
   for p in "${pkgs[@]}"; do
@@ -101,7 +100,6 @@ install_missing_pkgs() {
   return 0
 }
 
-# 先尝试自动安装缺的命令，仍缺才退出
 check_cmds_or_exit() {
   local NEED_CMDS=("$@")
   local missing=()
@@ -115,13 +113,11 @@ check_cmds_or_exit() {
     return 0
   fi
 
-  # 先尝试自动安装
   if ! install_missing_pkgs "${missing[@]}"; then
     echo -e "${ERROR} 自动安装依赖失败：${missing[*]}"
     exit 1
   fi
 
-  # 再次检查
   local still_missing=()
   for c in "${NEED_CMDS[@]}"; do
     if ! command -v "$c" >/dev/null 2>&1; then
@@ -151,10 +147,7 @@ get_anytls_arch() {
   case "$(uname -m)" in
     x86_64) echo "amd64" ;;
     aarch64) echo "arm64" ;;
-    *)
-      echo -e "${ERROR} AnyTLS: 不支持的架构 $(uname -m)"
-      exit 1
-      ;;
+    *) echo -e "${ERROR} AnyTLS: 不支持的架构 $(uname -m)"; exit 1 ;;
   esac
 }
 
@@ -171,7 +164,6 @@ get_anytls_latest_version() {
 }
 
 download_anytls() {
-  # AnyTLS 需要 wget / curl / unzip / openssl
   check_cmds_or_exit wget curl unzip openssl
   ANYTLS_VERSION=$(get_anytls_latest_version)
   local arch
@@ -346,11 +338,11 @@ view_anytls_config() {
 
   local host="$server_ip"
   [[ "$server_ip" == *:* ]] && host="[$server_ip]"
-  local uri="anytls://${password}@${host}:${listen_port}/?sni=${sni}&insecure=${insecure}#AnyTls"
+  local uri="anytls://${password}@${host}:${listen_port}/?sni=${sni}&insecure=${insecure}"
   echo
   echo -e "${CYAN}AnyTLS URI：${RESET}"
   echo -e "${YELLOW}${uri}${RESET}"
-}T
+}
 
 uninstall_anytls() {
   echo -e "${WARNING} 即将卸载 AnyTLS..."
@@ -401,7 +393,6 @@ install_singbox_core() {
     [[ "$c" =~ ^[Yy]$ ]] || return 0
   fi
 
-  # Reality 依赖 curl
   check_cmds_or_exit curl
   echo -e "${INFO} 使用官方脚本安装/更新 sing-box (beta)..."
   bash -c "$(curl -fsSL https://sing-box.vercel.app/)" @ install --beta || {
@@ -452,7 +443,6 @@ prompt_reality() {
   local default_target="time.is"
   local port
 
-  # Reality 需要 openssl 生成 short_id
   check_cmds_or_exit openssl
 
   while true; do
@@ -484,7 +474,7 @@ prompt_reality() {
 
   read -rp "Reality short_id（留空则随机 8 位十六进制）: " REALITY_SHORT_ID
   if [[ -z "$REALITY_SHORT_ID" ]]; then
-    REALITY_SHORT_ID=$(openssl rand -hex 4)  # 8 hex
+    REALITY_SHORT_ID=$(openssl rand -hex 4)
   fi
 }
 
@@ -626,7 +616,7 @@ show_reality_info() {
 
   local host="$ip4"
   [[ "$ip4" == *:* ]] && host="[$ip4]"
-  local vless_uri="vless://${UUID}@${host}:${PORT}?security=reality&sni=${SNI}&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&flow=xtls-rprx-vision&type=tcp#VLESS-Reality"
+  local vless_uri="vless://${UUID}@${host}:${PORT}?security=reality&sni=${SNI}&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&flow=xtls-rprx-vision&type=tcp#Reality"
   echo
   echo -e "${CYAN}VLESS Reality 导入链接：${RESET}"
   echo -e "${YELLOW}${vless_uri}${RESET}"
@@ -764,7 +754,7 @@ main_menu() {
       8) uninstall_reality ;;
       9) uninstall_all ;;
       0) exit 0 ;;
-      *) echo -e "${ERROR} 无效选项";;
+      *) echo -e "${ERROR} 无效选项" ;;
     esac
     echo
   done
