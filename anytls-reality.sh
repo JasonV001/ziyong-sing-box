@@ -52,6 +52,7 @@ check_root() {
 
 detect_distro() {
   if [[ -f /etc/os-release ]]; then
+    # shellcheck disable=SC1091
     . /etc/os-release
     DISTRO_ID=${ID,,}
     DISTRO_LIKE=${ID_LIKE,,}
@@ -252,7 +253,7 @@ EOF
 
 create_anytls_service() {
   if ! has_systemctl; then
-    echo -e "${WARNING} 未检测到 systemctl，使用后台进程方式运行 AnyTLS（适用于 Alpine 等无 systemd 系统）"
+    echo -e "${WARNING} 未检测到 systemctl，将在无 systemd 系统上使用后台进程方式运行 AnyTLS"
     return
   fi
 
@@ -288,7 +289,6 @@ start_anytls() {
       echo -e "${ERROR} AnyTLS 服务启动失败，请执行：journalctl -u anytls -n 20 --no-pager"
     fi
   else
-    # 无 systemd：用 nohup 后台跑
     pkill -f "${ANYTLS_BINARY_NAME} -l ${ANYTLS_LISTEN_ADDR}:${ANYTLS_LISTEN_PORT}" 2>/dev/null || true
     nohup "${ANYTLS_INSTALL_DIR}/${ANYTLS_BINARY_NAME}" -l "${ANYTLS_LISTEN_ADDR}:${ANYTLS_LISTEN_PORT}" -p "${ANYTLS_PASSWORD}" >/var/log/anytls.log 2>&1 &
     echo -e "${INFO} AnyTLS 已在后台启动（无 systemd），日志：/var/log/anytls.log"
@@ -378,6 +378,42 @@ install_anytls_flow() {
   start_anytls
   clear
   view_anytls_config
+}
+
+update_anytls() {
+  echo -e "${CYAN}=== AnyTLS 更新 ===${RESET}"
+  local current_version="未知"
+
+  if [[ -f "$ANYTLS_CONFIG_FILE" ]]; then
+    current_version=$(grep '^version=' "$ANYTLS_CONFIG_FILE" | cut -d= -f2)
+    current_version=${current_version:-"未知"}
+  fi
+
+  local latest_version
+  latest_version=$(get_anytls_latest_version)
+
+  echo -e "当前版本: ${current_version}"
+  echo -e "最新版本: ${latest_version}"
+
+  if [[ "$current_version" == "$latest_version" ]]; then
+    echo -e "${INFO} 已是最新版本，无需更新。"
+    return
+  fi
+
+  read -rp "确认更新 AnyTLS 到 ${latest_version} ? (y/N): " c
+  if [[ ! "$c" =~ ^[Yy]$ ]]; then
+    echo -e "${INFO} 已取消更新"
+    return
+  fi
+
+  download_anytls  # 会设置 ANYTLS_VERSION
+
+  if [[ -f "$ANYTLS_CONFIG_FILE" ]]; then
+    sed -i "s/^version=.*/version=${ANYTLS_VERSION}/" "$ANYTLS_CONFIG_FILE" || true
+  fi
+
+  restart_anytls
+  echo -e "${INFO} AnyTLS 已更新到版本 ${ANYTLS_VERSION}"
 }
 
 # ===== Reality (sing-box VLESS-REALITY) 部分 =====
@@ -789,7 +825,7 @@ main_menu() {
       2) install_reality_flow ;;
       3) show_all_nodes_info ;;
       4) nodes_manage_menu ;;
-      5) update_anytls ;
+      5) update_anytls ;;
       6) install_singbox_core ;;
       7) update_script ;;
       8) uninstall_anytls ;;
