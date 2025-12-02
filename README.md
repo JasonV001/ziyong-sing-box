@@ -5,10 +5,7 @@ wget -N -O /usr/local/bin/anytls-reality.sh https://raw.githubusercontent.com/Ja
 ```
 
 ```
-wget -N -O /usr/local/bin/socks5.sh \
-  https://raw.githubusercontent.com/JasonV001/ziyong-sing-box/refs/heads/main/socks5.sh \
-  && chmod +x /usr/local/bin/socks5.sh \
-  && bash /usr/local/bin/socks5.sh
+wget -N -O /usr/local/bin/socks5.sh https://raw.githubusercontent.com/JasonV001/ziyong-sing-box/refs/heads/main/socks5.sh && chmod +x /usr/local/bin/socks5.sh && bash /usr/local/bin/socks5.sh
 ```
 # 再次运行
 ```
