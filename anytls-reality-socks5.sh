@@ -328,15 +328,8 @@ EOF
 EOF
   fi
 
-  # 添加TCP保活配置（移除不支持的udp字段）
-  # sing-box 1.12.0 SOCKS5 inbound不再支持udp字段，UDP默认开启
-  
-  if [[ "$SOCKS5_TCP_KEEPALIVE" == "true" ]]; then
-    cat >> "$SOCKS5_CONFIG_FILE" << EOF
-      ,
-      "tcp_keepalive": true
-EOF
-  fi
+  # 注意：sing-box 1.12.0 SOCKS5 inbound不再支持tcp_keepalive字段和udp字段
+  # TCP保活和UDP功能默认启用，无需额外配置
 
   # 完成配置
   cat >> "$SOCKS5_CONFIG_FILE" << EOF
