@@ -733,6 +733,20 @@ uninstall_reality() {
 
 # ===== SOCKS5 (Dante) 节点 部分 =====
 
+find_dante_cmd() {
+  # 检测可用的 Dante 可执行文件名称（不同发行版可能是 danted 或 sockd）
+  if command -v danted >/dev/null 2>&1; then
+    DANTE_CMD=$(command -v danted)
+    return 0
+  fi
+  if command -v sockd >/dev/null 2>&1; then
+    DANTE_CMD=$(command -v sockd)
+    return 0
+  fi
+  echo -e "${ERROR} 未找到 danted 或 sockd 可执行文件，请确认 dante-server 是否安装成功"
+  return 1
+}
+
 prompt_socks5() {
   echo -e "${CYAN}=== SOCKS5 (Dante) 参数配置 ===${RESET}"
   local port user pass
@@ -866,8 +880,12 @@ start_socks5() {
       echo -e "${ERROR} SOCKS5 (Dante) 服务启动失败，请执行：journalctl -u ${SOCKS5_SERVICE_NAME} -n 20 --no-pager"
     fi
   else
+    if ! find_dante_cmd; then
+      return 1
+    fi
     pkill -f "danted" 2>/dev/null || true
-    nohup danted -f "$SOCKS5_CONFIG_FILE" >/var/log/danted.log 2>&1 &
+    pkill -f "sockd" 2>/dev/null || true
+    nohup "$DANTE_CMD" -f "$SOCKS5_CONFIG_FILE" >/var/log/danted.log 2>&1 &
     echo -e "${INFO} SOCKS5 (Dante) 已在后台启动（无 systemd），日志：/var/log/danted.log"
   fi
 }
@@ -878,6 +896,7 @@ stop_socks5() {
     echo -e "${INFO} SOCKS5 (Dante) systemd 服务已停止"
   else
     pkill -f "danted" 2>/dev/null || true
+    pkill -f "sockd" 2>/dev/null || true
     echo -e "${INFO} SOCKS5 (Dante) 后台进程已停止"
   fi
 }
