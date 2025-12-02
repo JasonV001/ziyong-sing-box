@@ -49,7 +49,6 @@ SOCKS5_LISTEN_PORT="1080"
 SOCKS5_LISTEN_ADDR="[::]"
 SOCKS5_AUTH_USERNAME=""
 SOCKS5_AUTH_PASSWORD=""
-SOCKS5_UDP_ENABLED="true"
 SOCKS5_TCP_KEEP_ALIVE="true"
 # SOCKS5 默认值
 default_socks5_port="1080"
@@ -58,7 +57,6 @@ default_socks5_password=""
 SOCKS5_PORT=""
 SOCKS5_USERNAME=""
 SOCKS5_PASSWORD=""
-SOCKS5_UDP=""
 SOCKS5_TCP_KEEPALIVE=""
 
 # 脚本自更新地址
@@ -269,13 +267,7 @@ prompt_socks5() {
     fi
   fi
 
-  # 选择是否启用UDP
-  read -rp "是否启用UDP转发 [y/n] [y]: " input_udp
-  if [[ "$input_udp" == "n" || "$input_udp" == "N" ]]; then
-    SOCKS5_UDP="false"
-  else
-    SOCKS5_UDP="true"
-  fi
+  # 注意：sing-box 1.12.0版本中SOCKS5 inbound的UDP功能默认开启，无需额外配置
 
   # 选择是否启用TCP保活
   read -rp "是否启用TCP保活 [y/n] [y]: " input_tcp_keepalive
@@ -371,7 +363,6 @@ EOF
 PORT="$SOCKS5_PORT"
 USERNAME="$SOCKS5_USERNAME"
 PASSWORD="$SOCKS5_PASSWORD"
-UDP="$SOCKS5_UDP"
 TCP_KEEPALIVE="$SOCKS5_TCP_KEEPALIVE"
 EOF
 
