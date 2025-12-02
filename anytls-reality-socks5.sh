@@ -40,8 +40,9 @@ SINGBOX_CMD=""
 
 # ===== 全局路径 =====
 # SOCKS5 (sing-box socks5)
-SOCKS5_CONFIG_DIR="${SINGBOX_CONFIG_DIR}"
-SOCKS5_CONFIG_FILE="${SOCKS5_CONFIG_DIR}/socks5.json"
+SOCKS5_CONFIG_DIR="${SINGBOX_CONFIG_DIR}/socks5"
+SOCKS5_CONFIG_FILE="${SOCKS5_CONFIG_DIR}/config.json"
+SOCKS5_INFO_FILE="${SOCKS5_CONFIG_DIR}/socks5.info"
 SOCKS5_SERVICE_FILE="/etc/systemd/system/sing-box-socks5.service"
 SOCKS5_LOG_FILE="/var/log/sing-box-socks5.log"
 SOCKS5_LISTEN_PORT="1080"
@@ -1140,15 +1141,21 @@ restart_socks5() {
   fi
 }
 
-# 显示 SOCKS5 配置信息
+check_socks5_config() {
+  if [[ -z "$SINGBOX_CMD" ]]; then
+    return 0
+  fi
+  "$SINGBOX_CMD" check -c "$SOCKS5_CONFIG_FILE"
+}
+
 show_socks5_info() {
-  if [[ ! -f "${SINGBOX_CONFIG_DIR}/socks5/socks5.info" ]]; then
-    echo -e "${ERROR} 未找到 SOCKS5 配置信息：${SINGBOX_CONFIG_DIR}/socks5/socks5.info"
+  if [[ ! -f "$SOCKS5_INFO_FILE" ]]; then
+    echo -e "${ERROR} 未找到 SOCKS5 配置信息：${SOCKS5_INFO_FILE}"
     return
   fi
   
   # shellcheck disable=SC1090
-  . "${SINGBOX_CONFIG_DIR}/socks5/socks5.info"
+  . "$SOCKS5_INFO_FILE"
   
   local server_ip
   server_ip=$(get_server_ip_simple)
@@ -1183,10 +1190,9 @@ show_socks5_info() {
   echo -e "${YELLOW}${uri}${RESET}"
 }
 
-# 卸载 SOCKS5 节点
 uninstall_socks5() {
   echo -e "${WARNING} 即将卸载 SOCKS5 节点..."
-  read -rp "确认卸载 SOCKS5 ? (y/N): " c
+  read -rp "确认卸载 SOCKS5 节点 ? (y/N): " c
   if [[ ! "$c" =~ ^[Yy]$ ]]; then
     echo -e "${INFO} 已取消"
     return
@@ -1198,8 +1204,8 @@ uninstall_socks5() {
     systemctl disable sing-box-socks5.service 2>/dev/null || true
   fi
   
-  rm -f "/etc/systemd/system/sing-box-socks5.service"
-  rm -rf "${SINGBOX_CONFIG_DIR}/socks5"
+  rm -f "$SOCKS5_SERVICE_FILE"
+  rm -rf "$SOCKS5_CONFIG_DIR"
   
   if has_systemctl; then
     systemctl daemon-reload
@@ -1208,27 +1214,42 @@ uninstall_socks5() {
   echo -e "${INFO} SOCKS5 节点已卸载完成"
 }
 
-# 安装 SOCKS5 节点流程
 install_socks5_flow() {
-  check_cmds_or_exit curl openssl
+  # 检查并安装 sing-box
   install_singbox_core
   find_singbox_cmd
-  
   if [[ -z "$SINGBOX_CMD" ]]; then
     echo -e "${ERROR} sing-box 未就绪，无法安装 SOCKS5 节点"
-    return
+    return 1
   fi
   
-  prompt_socks5
+  # 配置 SOCKS5 参数
+  if ! prompt_socks5; then
+    echo -e "${ERROR} SOCKS5 配置失败"
+    return 1
+  fi
+  
+  # 生成配置文件
   write_socks5_config
+  
+  # 检查配置
+  if ! check_socks5_config; then
+    echo -e "${ERROR} SOCKS5 配置检查失败，请执行：sing-box check -c ${SOCKS5_CONFIG_FILE}"
+    return 1
+  fi
+  
+  # 创建服务并启动
   create_socks5_service
   start_socks5
-  clear
+  
+  echo -e "${INFO} SOCKS5 节点已安装并启动"
   show_socks5_info
   
   # 自动设置开机自启动
   echo -e "\n${INFO} 正在更新开机自启动设置..."
   update_autostart_with_socks5
+  
+  return 0
 }
 
 # 更新开机自启动设置，包含 SOCKS5
@@ -1271,7 +1292,7 @@ nodes_manage_menu() {
   echo "3) 重启全部节点"
   echo "4) 查看服务状态"
   echo "5) 单独管理 SOCKS5 节点"
-  echo "0) 返回主菜单"
+  echo "0) 返回节点管理菜单"
   read -rp "请选择: " opt
   case "$opt" in
     1)
@@ -1419,3 +1440,6 @@ uninstall_all() {
     uninstall_socks5
   fi
 }
+
+
+
