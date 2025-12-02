@@ -278,9 +278,15 @@ prompt_socks5() {
 # 生成SOCKS5配置文件
 write_socks5_config() {
   # 确保配置目录存在
+  echo -e "${INFO} 准备生成SOCKS5配置文件..."
   mkdir -p "$SOCKS5_CONFIG_DIR"
+  if [[ ! -d "$SOCKS5_CONFIG_DIR" ]]; then
+    echo -e "${ERROR} 无法创建配置目录: $SOCKS5_CONFIG_DIR"
+    return 1
+  fi
 
   # 直接生成配置文件的开始部分
+  echo -e "${INFO} 正在创建SOCKS5配置文件: $SOCKS5_CONFIG_FILE"
   cat > "$SOCKS5_CONFIG_FILE" << EOF
 {
   "log": {
@@ -292,14 +298,12 @@ write_socks5_config() {
       {
         "type": "udp",
         "server": "8.8.8.8",
-        "detour": "direct",
-        "domain_resolver": "direct"
+        "detour": "direct"
       },
       {
         "type": "udp",
         "server": "1.1.1.1",
-        "detour": "direct",
-        "domain_resolver": "direct"
+        "detour": "direct"
       }
     ],
     "rules": []
@@ -336,14 +340,12 @@ EOF
   "outbounds": [
     {
       "type": "direct",
-      "tag": "direct",
-      "domain_resolver": "direct"
+      "tag": "direct"
     }
   ],
   "route": {
     "rules": [],
     "final": "direct",
-    "default_domain_resolver": "direct",
     "auto_detect_interface": true
   }
 }
@@ -359,7 +361,21 @@ PASSWORD="$SOCKS5_PASSWORD"
 TCP_KEEPALIVE="$SOCKS5_TCP_KEEPALIVE"
 EOF
 
-  return $?
+  # 验证配置文件是否成功创建
+  if [[ ! -f "$SOCKS5_CONFIG_FILE" ]]; then
+    echo -e "${ERROR} 配置文件创建失败: $SOCKS5_CONFIG_FILE"
+    return 1
+  fi
+  
+  # 验证配置文件大小
+  if [[ ! -s "$SOCKS5_CONFIG_FILE" ]]; then
+    echo -e "${ERROR} 配置文件为空: $SOCKS5_CONFIG_FILE"
+    return 1
+  fi
+  
+  echo -e "${INFO} SOCKS5配置文件创建成功: $SOCKS5_CONFIG_FILE"
+  echo -e "${INFO} SOCKS5信息文件创建成功: $SOCKS5_INFO_FILE"
+  return 0
 }
 
 # 创建SOCKS5系统服务
