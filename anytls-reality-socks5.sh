@@ -343,6 +343,7 @@ EOF
   "route": {
     "rules": [],
     "final": "direct",
+    "default_domain_resolver": "direct",
     "auto_detect_interface": true
   }
 }
@@ -370,7 +371,13 @@ create_socks5_service() {
   fi
 
   # 确保systemd服务目录存在
-  mkdir -p "$(dirname "$SOCKS5_SERVICE_FILE")"
+  local service_dir="$(dirname "$SOCKS5_SERVICE_FILE")"
+  echo -e "${INFO} 确保systemd服务目录存在: ${service_dir}"
+  mkdir -p "${service_dir}"
+  if [[ ! -d "${service_dir}" ]]; then
+    echo -e "${ERROR} 无法创建systemd服务目录: ${service_dir}"
+    return 1
+  fi
 
   # 创建服务文件
   cat > "$SOCKS5_SERVICE_FILE" << EOF
