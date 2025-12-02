@@ -38,12 +38,6 @@ SINGBOX_REALITY_INFO="${SINGBOX_CONFIG_DIR}/reality.info"
 SINGBOX_REALITY_SERVICE="/etc/systemd/system/sing-box-reality.service"
 SINGBOX_CMD=""
 
-# SOCKS5 (Dante) 服务
-SOCKS5_CONFIG_FILE="/etc/danted.conf"
-SOCKS5_SERVICE_NAME="danted"
-SOCKS5_DEFAULT_PORT="1080"
-SOCKS5_INFO_FILE="/etc/danted.info"
-
 # 脚本自更新地址
 SCRIPT_URL="https://raw.githubusercontent.com/JasonV001/ziyong-sing-box/refs/heads/main/anytls-reality"
 SCRIPT_PATH="/usr/local/bin/anytls-reality.sh"
@@ -731,232 +725,6 @@ uninstall_reality() {
   echo -e "${INFO} Reality 节点已卸载完成"
 }
 
-# ===== SOCKS5 (Dante) 节点 部分 =====
-
-find_dante_cmd() {
-  # 检测可用的 Dante 可执行文件名称（不同发行版可能是 danted 或 sockd）
-  if command -v danted >/dev/null 2>&1; then
-    DANTE_CMD=$(command -v danted)
-    return 0
-  fi
-  if command -v sockd >/dev/null 2>&1; then
-    DANTE_CMD=$(command -v sockd)
-    return 0
-  fi
-  echo -e "${ERROR} 未找到 danted 或 sockd 可执行文件，请确认 dante-server 是否安装成功"
-  return 1
-}
-
-prompt_socks5() {
-  echo -e "${CYAN}=== SOCKS5 (Dante) 参数配置 ===${RESET}"
-  local port user pass
-  local default_port="$SOCKS5_DEFAULT_PORT"
-
-  while true; do
-    read -rp "SOCKS5 监听端口（留空则使用 ${default_port}）: " port
-    port="${port:-$default_port}"
-    if ! [[ "$port" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
-      echo -e "${ERROR} 端口必须是 1-65535 的数字"
-      continue
-    fi
-    if ! check_port_free "$port"; then
-      echo -e "${ERROR} 端口 ${port} 已被占用，请重新选择"
-      continue
-    fi
-    SOCKS5_PORT="$port"
-    break
-  done
-
-  # 用户名：可手动输入，留空则自动生成十六进制随机字符串
-  check_cmds_or_exit openssl
-  while true; do
-    read -rp "SOCKS5 用户名（留空则自动生成 hex，仅允许字母数字下划线）: " user
-    if [[ -z "$user" ]]; then
-      SOCKS5_USER=$(openssl rand -hex 4)
-      echo -e "${INFO} 已自动生成 SOCKS5 用户名 (hex): ${SOCKS5_USER}"
-      break
-    fi
-    if ! [[ "$user" =~ ^[a-zA-Z0-9_]+$ ]]; then
-      echo -e "${ERROR} 用户名仅允许字母、数字和下划线"
-      continue
-    fi
-    SOCKS5_USER="$user"
-    break
-  done
-
-  # 密码：可手动输入，留空则自动生成十六进制随机字符串
-  while true; do
-    read -rsp "SOCKS5 密码（留空则自动生成 hex）: " pass
-    echo
-    if [[ -z "$pass" ]]; then
-      SOCKS5_PASS=$(openssl rand -hex 8)
-      echo -e "${INFO} 已自动生成 SOCKS5 密码 (hex): ${SOCKS5_PASS}"
-      break
-    fi
-    SOCKS5_PASS="$pass"
-    break
-  done
-}
-
-write_socks5_config() {
-  local iface
-  iface=$(ip -4 route ls 2>/dev/null | grep default | grep -Po '(?<=dev )\S+' | head -n 1 || true)
-  iface="${iface:-eth0}"
-
-  cat >"$SOCKS5_CONFIG_FILE" <<EOF
-logoutput: /var/log/socks.log
-internal: 0.0.0.0 port = ${SOCKS5_PORT}
-external: ${iface}
-socksmethod: username
-user.privileged: root
-user.notprivileged: nobody
-
-client pass {
-  from: 0.0.0.0/0 to: 0.0.0.0/0
-  log: error connect disconnect
-}
-
-client block {
-  from: 0.0.0.0/0 to: 0.0.0.0/0
-  log: connect error
-}
-
-socks pass {
-  from: 0.0.0.0/0 to: 0.0.0.0/0
-  log: error connect disconnect
-}
-
-socks block {
-  from: 0.0.0.0/0 to: 0.0.0.0/0
-  log: connect error
-}
-EOF
-
-  cat >"$SOCKS5_INFO_FILE" <<EOF
-PORT=${SOCKS5_PORT}
-USER=${SOCKS5_USER}
-PASS=${SOCKS5_PASS}
-EOF
-}
-
-create_socks5_user() {
-  # 创建本地系统用户用于认证
-  if id "$SOCKS5_USER" >/dev/null 2>&1; then
-    userdel -r -f "$SOCKS5_USER" >/dev/null 2>&1 || true
-  fi
-  useradd -m -s /bin/false "$SOCKS5_USER" >/dev/null 2>&1 || true
-  echo -e "${SOCKS5_PASS}\n${SOCKS5_PASS}" | passwd "$SOCKS5_USER" >/dev/null 2>&1 || true
-}
-
-install_socks5_core() {
-  detect_distro
-  echo -e "${INFO} 正在安装 SOCKS5 (Dante) 服务端依赖..."
-  if [[ "$DISTRO_ID" == "alpine" || "$DISTRO_LIKE" == "alpine" ]]; then
-    apk update -q || true
-    apk add --no-cache dante-server iproute2 || {
-      echo -e "${ERROR} apk 安装 dante-server 失败"
-      return 1
-    }
-  elif [[ "$DISTRO_ID" =~ (debian|ubuntu) || "$DISTRO_LIKE" =~ (debian|ubuntu) ]]; then
-    apt-get update -y -qq || true
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends dante-server iproute2 || {
-      echo -e "${ERROR} apt-get 安装 dante-server 失败"
-      return 1
-    }
-  else
-    echo -e "${WARNING} 未识别或暂不支持的发行版，无法自动安装 SOCKS5 (Dante)。仅支持 Debian/Ubuntu/Alpine。"
-    return 1
-  fi
-  return 0
-}
-
-start_socks5() {
-  if has_systemctl; then
-    systemctl restart "$SOCKS5_SERVICE_NAME" 2>/dev/null || systemctl start "$SOCKS5_SERVICE_NAME" 2>/dev/null || true
-    sleep 1
-    if systemctl is-active --quiet "$SOCKS5_SERVICE_NAME"; then
-      echo -e "${INFO} SOCKS5 (Dante) 服务已启动"
-    else
-      echo -e "${ERROR} SOCKS5 (Dante) 服务启动失败，请执行：journalctl -u ${SOCKS5_SERVICE_NAME} -n 20 --no-pager"
-    fi
-  else
-    if ! find_dante_cmd; then
-      return 1
-    fi
-    pkill -f "danted" 2>/dev/null || true
-    pkill -f "sockd" 2>/dev/null || true
-    nohup "$DANTE_CMD" -f "$SOCKS5_CONFIG_FILE" >/var/log/danted.log 2>&1 &
-    echo -e "${INFO} SOCKS5 (Dante) 已在后台启动（无 systemd），日志：/var/log/danted.log"
-  fi
-}
-
-stop_socks5() {
-  if has_systemctl; then
-    systemctl stop "$SOCKS5_SERVICE_NAME" 2>/dev/null || true
-    echo -e "${INFO} SOCKS5 (Dante) systemd 服务已停止"
-  else
-    pkill -f "danted" 2>/dev/null || true
-    pkill -f "sockd" 2>/dev/null || true
-    echo -e "${INFO} SOCKS5 (Dante) 后台进程已停止"
-  fi
-}
-
-restart_socks5() {
-  stop_socks5
-  start_socks5
-}
-
-install_socks5_flow() {
-  check_cmds_or_exit ip passwd
-  if ! install_socks5_core; then
-    return
-  fi
-  prompt_socks5
-  create_socks5_user
-  write_socks5_config
-  start_socks5
-  echo -e "${INFO} SOCKS5 (Dante) 节点已安装并启动"
-  show_socks5_info
-}
-
-show_socks5_info() {
-  if [[ ! -f "$SOCKS5_INFO_FILE" ]]; then
-    echo -e "${WARNING} 未找到 SOCKS5 信息文件：${SOCKS5_INFO_FILE}，可能尚未安装 SOCKS5 节点"
-    return
-  fi
-  # shellcheck disable=SC1090
-  . "$SOCKS5_INFO_FILE"
-
-  local ip4
-  ip4=$(get_server_ip_simple)
-
-  echo -e "${CYAN}SOCKS5 (Dante) 节点信息：${RESET}"
-  echo -e "  协议: socks5"
-  echo -e "  地址: ${ip4:-你的服务器 IP}"
-  echo -e "  端口: ${PORT}"
-  echo -e "  用户名: ${USER}"
-  echo -e "  密码: ${PASS}"
-}
-
-uninstall_socks5() {
-  echo -e "${WARNING} 即将卸载 SOCKS5 (Dante) 节点..."
-  read -rp "确认卸载 SOCKS5 ? (y/N): " c
-  if [[ ! "$c" =~ ^[Yy]$ ]]; then
-    echo -e "${INFO} 已取消"
-    return
-  fi
-
-  stop_socks5
-  detect_distro
-  if [[ "$DISTRO_ID" == "alpine" || "$DISTRO_LIKE" == "alpine" ]]; then
-    apk del dante-server 2>/dev/null || true
-  elif [[ "$DISTRO_ID" =~ (debian|ubuntu) || "$DISTRO_LIKE" =~ (debian|ubuntu) ]]; then
-    apt-get remove --purge -y dante-server 2>/dev/null || true
-  fi
-  rm -f "$SOCKS5_CONFIG_FILE" "$SOCKS5_INFO_FILE"
-  echo -e "${INFO} SOCKS5 (Dante) 节点已卸载完成"
-}
-
 nodes_manage_menu() {
   echo -e "${CYAN}=== 节点管理 ===${RESET}"
   echo "1) 启动全部节点"
@@ -974,7 +742,6 @@ nodes_manage_menu() {
         pkill -f "sing-box run -c ${SINGBOX_REALITY_CONF}" 2>/dev/null || true
         nohup "${SINGBOX_CMD}" run -c "${SINGBOX_REALITY_CONF}" >/var/log/singbox-reality.log 2>&1 &
       fi
-      start_socks5
       ;;
     2)
       stop_anytls
@@ -983,7 +750,6 @@ nodes_manage_menu() {
       else
         pkill -f "sing-box run -c ${SINGBOX_REALITY_CONF}" 2>/dev/null || true
       fi
-      stop_socks5
       ;;
     3)
       restart_anytls
@@ -993,13 +759,11 @@ nodes_manage_menu() {
         pkill -f "sing-box run -c ${SINGBOX_REALITY_CONF}" 2>/dev/null || true
         nohup "${SINGBOX_CMD}" run -c "${SINGBOX_REALITY_CONF}" >/var/log/singbox-reality.log 2>&1 &
       fi
-      restart_socks5
       ;;
     4)
       if has_systemctl; then
         systemctl status anytls 2>/dev/null || echo "AnyTLS 服务不存在或未安装"
         systemctl status sing-box-reality.service 2>/dev/null || echo "Reality 服务不存在或未安装"
-        systemctl status "$SOCKS5_SERVICE_NAME" 2>/dev/null || echo "SOCKS5 服务不存在或未安装"
       else
         echo -e "${WARNING} 无 systemd，无法使用 systemctl 查看状态；请通过 ps/日志自行确认进程。"
       fi
@@ -1032,17 +796,12 @@ uninstall_all() {
   if [[ -f "$SINGBOX_REALITY_CONF" || -f "$SINGBOX_REALITY_SERVICE" ]]; then
     uninstall_reality
   fi
-  if [[ -f "$SOCKS5_CONFIG_FILE" ]]; then
-    uninstall_socks5
-  fi
 }
 
 show_all_nodes_info() {
   view_anytls_config
   echo
   show_reality_info
-  echo
-  show_socks5_info
 }
 
 # ===== ar 快捷命令安装 =====
@@ -1062,31 +821,27 @@ main_menu() {
     echo -e "${CYAN}=== AnyTLS & Reality 管理脚本 ===${RESET}"
     echo "1) 安装 / 重新安装 AnyTLS 节点 (anytls-go)"
     echo "2) 安装 / 重新安装 Reality (VLESS-Vision) 节点 (sing-box)"
-    echo "3) 安装 / 重新安装 SOCKS5 (Dante) 节点"
-    echo "4) 查看节点信息 (AnyTLS + Reality + SOCKS5)"
-    echo "5) 节点管理（启动 / 停止 / 重启 / 状态）"
-    echo "6) 更新 AnyTLS 二进制"
-    echo "7) 重新下载/更新 sing-box 二进制"
-    echo "8) 更新本管理脚本"
-    echo "9) 卸载 AnyTLS 节点"
-    echo "10) 卸载 Reality 节点"
-    echo "11) 卸载全部节点与配置"
-    echo "12) 卸载 SOCKS5 (Dante) 节点"
+    echo "3) 查看节点信息 (AnyTLS + Reality)"
+    echo "4) 节点管理（启动 / 停止 / 重启 / 状态）"
+    echo "5) 更新 AnyTLS 二进制"
+    echo "6) 重新下载/更新 sing-box 二进制"
+    echo "7) 更新本管理脚本"
+    echo "8) 卸载 AnyTLS 节点"
+    echo "9) 卸载 Reality 节点"
+    echo "10) 卸载全部节点与配置"
     echo "0) 退出"
     read -rp "请选择: " c
     case "$c" in
       1) install_anytls_flow ;;
       2) install_reality_flow ;;
-      3) install_socks5_flow ;;
-      4) show_all_nodes_info ;;
-      5) nodes_manage_menu ;;
-      6) update_anytls ;;
-      7) install_singbox_core ;;
-      8) update_script ;;
-      9) uninstall_anytls ;;
-      10) uninstall_reality ;;
-      11) uninstall_all ;;
-      12) uninstall_socks5 ;;
+      3) show_all_nodes_info ;;
+      4) nodes_manage_menu ;;
+      5) update_anytls ;;
+      6) install_singbox_core ;;
+      7) update_script ;;
+      8) uninstall_anytls ;;
+      9) uninstall_reality ;;
+      10) uninstall_all ;;
       0) exit 0 ;;
       *) echo -e "${ERROR} 无效选项" ;;
     esac
