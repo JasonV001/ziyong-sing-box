@@ -177,8 +177,8 @@ has_systemctl() {
 prompt_socks5() {
   # 设置默认值
   SOCKS5_PORT="${default_socks5_port}"
-  SOCKS5_USERNAME="${default_socks5_username}"
-  SOCKS5_PASSWORD="${default_socks5_password}"
+  SOCKS5_USERNAME=""
+  SOCKS5_PASSWORD=""
   SOCKS5_UDP="true"
   SOCKS5_TCP_KEEPALIVE="true"
 
@@ -192,26 +192,48 @@ prompt_socks5() {
   read -rp "请输入SOCKS5监听端口 [${SOCKS5_PORT}]: " input_port
   [[ -n "$input_port" ]] && SOCKS5_PORT="$input_port"
 
-  # 输入用户名（可选）
-  read -rp "请输入认证用户名 [留空不设密码]: " input_username
-  [[ -n "$input_username" ]] && SOCKS5_USERNAME="$input_username"
-
-  # 如果设置了用户名，输入密码
-  if [[ -n "$SOCKS5_USERNAME" ]]; then
-    # 输入并验证密码
-    while true; do
-      read -rsp "请输入认证密码: " input_password
-      echo
-      read -rsp "请再次输入认证密码: " confirm_password
-      echo
-      
-      if [[ "$input_password" == "$confirm_password" ]]; then
+  # 输入用户名（留空则随机生成）
+  echo -e "${INFO} 留空则随机生成用户名和密码"
+  read -rp "请输入认证用户名 [留空随机生成]: " input_username
+  
+  if [[ -z "$input_username" ]]; then
+    # 随机生成用户名（8位十六进制）
+    SOCKS5_USERNAME=$(openssl rand -hex 4)
+    echo -e "${INFO} 已随机生成用户名: ${SOCKS5_USERNAME}"
+    
+    # 随机生成密码（16位十六进制）
+    SOCKS5_PASSWORD=$(openssl rand -hex 8)
+    echo -e "${INFO} 已随机生成密码: ${SOCKS5_PASSWORD}"
+  else
+    SOCKS5_USERNAME="$input_username"
+    
+    # 输入密码（留空则随机生成）
+    read -rp "请输入认证密码 [留空随机生成]: " input_password
+    if [[ -z "$input_password" ]]; then
+      # 随机生成密码（16位十六进制）
+      SOCKS5_PASSWORD=$(openssl rand -hex 8)
+      echo -e "${INFO} 已随机生成密码: ${SOCKS5_PASSWORD}"
+    else
+      # 输入并验证密码
+      while true; do
         SOCKS5_PASSWORD="$input_password"
-        break
-      else
-        echo -e "${ERROR} 两次输入的密码不一致，请重试"
-      fi
-    done
+        read -rsp "请再次输入认证密码: " confirm_password
+        echo
+        
+        if [[ "$SOCKS5_PASSWORD" == "$confirm_password" ]]; then
+          break
+        else
+          echo -e "${ERROR} 两次输入的密码不一致，请重试"
+          read -rp "请输入认证密码 [留空随机生成]: " input_password
+          if [[ -z "$input_password" ]]; then
+            # 随机生成密码（16位十六进制）
+            SOCKS5_PASSWORD=$(openssl rand -hex 8)
+            echo -e "${INFO} 已随机生成密码: ${SOCKS5_PASSWORD}"
+            break
+          fi
+        fi
+      done
+    fi
   fi
 
   # 选择是否启用UDP
@@ -238,34 +260,45 @@ write_socks5_config() {
   # 确保配置目录存在
   mkdir -p "$SOCKS5_CONFIG_DIR"
 
-  # 构建JSON配置
-  local config_content
-  config_content="cat > \"$SOCKS5_CONFIG_FILE\" << 'EOF'
+  # 直接生成配置文件的开始部分
+  cat > "$SOCKS5_CONFIG_FILE" << EOF
 {
-  \"log\": {
-    \"level\": \"info\",
-    \"timestamp\": true
+  "log": {
+    "level": "info",
+    "timestamp": true
   },
-  \"dns\": {
-    \"servers\": [
-      {\n        \"address\": \"8.8.8.8\",\n        \"detour\": \"direct\"\n      },
-      {\n        \"address\": \"1.1.1.1\",\n        \"detour\": \"direct\"\n      }
+  "dns": {
+    "servers": [
+      {
+        "address": "8.8.8.8",
+        "detour": "direct"
+      },
+      {
+        "address": "1.1.1.1",
+        "detour": "direct"
+      }
     ],
-    \"rules\": []
+    "rules": []
   },
-  \"inbounds\": [
+  "inbounds": [
     {
-      \"type\": \"socks\",
-      \"tag\": \"socks5-inbound\",
-      \"listen\": \"[::]\",
-      \"listen_port\": $SOCKS5_PORT"
+      "type": "socks",
+      "tag": "socks5-inbound",
+      "listen": "[::]",
+      "listen_port": $SOCKS5_PORT
+EOF
 
   # 添加认证配置（如果有）
   if [[ -n "$SOCKS5_USERNAME" && -n "$SOCKS5_PASSWORD" ]]; then
-    config_content="${config_content}
-      ,\n      \"users\": [
-        {\n          \"username\": \"$SOCKS5_USERNAME\",\n          \"password\": \"$SOCKS5_PASSWORD\"\n        }
-      ]"
+    cat >> "$SOCKS5_CONFIG_FILE" << EOF
+      ,
+      "users": [
+        {
+          "username": "$SOCKS5_USERNAME",
+          "password": "$SOCKS5_PASSWORD"
+        }
+      ]
+EOF
   fi
 
   # 添加UDP和TCP保活配置
@@ -273,31 +306,35 @@ write_socks5_config() {
   if [[ "$SOCKS5_UDP" == "false" ]]; then
     json_udp_value="false"
   fi
-  config_content="${config_content}
-      ,\n      \"udp\": $json_udp_value"
+  cat >> "$SOCKS5_CONFIG_FILE" << EOF
+      ,
+      "udp": $json_udp_value
+EOF
   
   if [[ "$SOCKS5_TCP_KEEPALIVE" == "true" ]]; then
-    config_content="${config_content}
-      ,\n      \"tcp_keepalive\": true"
+    cat >> "$SOCKS5_CONFIG_FILE" << EOF
+      ,
+      "tcp_keepalive": true
+EOF
   fi
 
   # 完成配置
-  config_content="${config_content}
+  cat >> "$SOCKS5_CONFIG_FILE" << EOF
     }
   ],
-  \"outbounds\": [
-    {\n      \"type\": \"direct\",\n      \"tag\": \"direct\"\n    }
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
   ],
-  \"route\": {
-    \"rules\": [],
-    \"final\": \"direct\",
-    \"auto_detect_interface\": true
+  "route": {
+    "rules": [],
+    "final": "direct",
+    "auto_detect_interface": true
   }
 }
-EOF"
-
-  # 执行配置文件生成
-  eval "$config_content"
+EOF
 
   # 创建信息文件，用于后续读取配置
   cat > "$SOCKS5_INFO_FILE" << EOF
