@@ -862,7 +862,7 @@ start_socks5() {
     fi
   else
     pkill -f "danted" 2>/dev/null || true
-    nohup danted -f "$SOCKS5_CONFIG_FILE" >/var/log/danted.log 2>&1 &
+    nohup /usr/sbin/danted -f "$SOCKS5_CONFIG_FILE" >/var/log/danted.log 2>&1 &
     echo -e "${INFO} SOCKS5 (Dante) 已在后台启动（无 systemd），日志：/var/log/danted.log"
   fi
 }
@@ -1038,33 +1038,31 @@ main_menu() {
     echo -e "${CYAN}=== AnyTLS & Reality 管理脚本 ===${RESET}"
     echo "1) 安装 / 重新安装 AnyTLS 节点 (anytls-go)"
     echo "2) 安装 / 重新安装 Reality (VLESS-Vision) 节点 (sing-box)"
-    echo "3) 查看节点信息 (AnyTLS + Reality + SOCKS5)"
-    echo "4) 节点管理（启动 / 停止 / 重启 / 状态）"
-    echo "5) 更新 AnyTLS 二进制"
-    echo "6) 重新下载/更新 sing-box 二进制"
-    echo "7) 更新本管理脚本"
-    echo "8) 卸载 AnyTLS 节点"
-    echo "9) 卸载 Reality 节点"
-    echo "10) 卸载全部节点与配置"
-    echo "11) 安装 ar 快捷命令（ar -> bash /usr/local/bin/anytls-reality.sh）"
-    echo "12) 安装 / 重新安装 SOCKS5 (Dante) 节点"
-    echo "13) 卸载 SOCKS5 (Dante) 节点"
+    echo "3) 安装 / 重新安装 SOCKS5 (Dante) 节点"
+    echo "4) 查看节点信息 (AnyTLS + Reality + SOCKS5)"
+    echo "5) 节点管理（启动 / 停止 / 重启 / 状态）"
+    echo "6) 更新 AnyTLS 二进制"
+    echo "7) 重新下载/更新 sing-box 二进制"
+    echo "8) 更新本管理脚本"
+    echo "9) 卸载 AnyTLS 节点"
+    echo "10) 卸载 Reality 节点"
+    echo "11) 卸载全部节点与配置"
+    echo "12) 卸载 SOCKS5 (Dante) 节点"
     echo "0) 退出"
     read -rp "请选择: " c
     case "$c" in
       1) install_anytls_flow ;;
       2) install_reality_flow ;;
-      3) show_all_nodes_info ;;
-      4) nodes_manage_menu ;;
-      5) update_anytls ;;
-      6) install_singbox_core ;;
-      7) update_script ;;
-      8) uninstall_anytls ;;
-      9) uninstall_reality ;;
-      10) uninstall_all ;;
-      11) install_ar_shortcut ;;
-      12) install_socks5_flow ;;
-      13) uninstall_socks5 ;;
+      3) install_socks5_flow ;;
+      4) show_all_nodes_info ;;
+      5) nodes_manage_menu ;;
+      6) update_anytls ;;
+      7) install_singbox_core ;;
+      8) update_script ;;
+      9) uninstall_anytls ;;
+      10) uninstall_reality ;;
+      11) uninstall_all ;;
+      12) uninstall_socks5 ;;
       0) exit 0 ;;
       *) echo -e "${ERROR} 无效选项" ;;
     esac
@@ -1074,4 +1072,5 @@ main_menu() {
 
 # ===== 入口 =====
 check_root
+install_ar_shortcut
 main_menu
