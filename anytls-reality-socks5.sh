@@ -292,12 +292,14 @@ write_socks5_config() {
       {
         "type": "udp",
         "server": "8.8.8.8",
-        "detour": "direct"
+        "detour": "direct",
+        "domain_resolver": "direct"
       },
       {
         "type": "udp",
         "server": "1.1.1.1",
-        "detour": "direct"
+        "detour": "direct",
+        "domain_resolver": "direct"
       }
     ],
     "rules": []
@@ -334,7 +336,8 @@ EOF
   "outbounds": [
     {
       "type": "direct",
-      "tag": "direct"
+      "tag": "direct",
+      "domain_resolver": "direct"
     }
   ],
   "route": {
@@ -365,6 +368,9 @@ create_socks5_service() {
     echo -e "${ERROR} 创建服务需要root权限"
     return 1
   fi
+
+  # 确保systemd服务目录存在
+  mkdir -p "$(dirname "$SOCKS5_SERVICE_FILE")"
 
   # 创建服务文件
   cat > "$SOCKS5_SERVICE_FILE" << EOF
