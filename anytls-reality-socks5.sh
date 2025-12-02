@@ -346,6 +346,7 @@ EOF
   "route": {
     "rules": [],
     "final": "direct",
+    "default_domain_resolver": "direct",
     "auto_detect_interface": true
   }
 }
@@ -429,14 +430,48 @@ EOF
 
 # 管理SOCKS5服务函数
 define_socks5_service_functions() {
+  # 获取SOCKS5进程ID
+  get_socks5_pid() {
+    if command -v pgrep >/dev/null 2>&1; then
+      pgrep -f "sing-box.*run.*-c.*${SOCKS5_CONFIG_FILE}" 2>/dev/null || echo ""
+    elif command -v ps >/dev/null 2>&1 && command -v grep >/dev/null 2>&1; then
+      ps aux | grep -v grep | grep -E "sing-box.*run.*-c.*${SOCKS5_CONFIG_FILE}" | awk '{print $2}' 2>/dev/null || echo ""
+    else
+      echo ""
+    fi
+  }
+
   # 启动SOCKS5服务
   start_socks5() {
     if has_systemctl; then
       systemctl start sing-box-socks5.service
       return $?
     else
-      echo -e "${ERROR} 不支持的系统，无法启动服务"
-      return 1
+      # 非systemd系统：使用后台进程方式启动
+      local pid=$(get_socks5_pid)
+      if [[ -n "$pid" ]]; then
+        echo -e "${INFO} SOCKS5服务已经在运行，PID: $pid"
+        return 0
+      fi
+      
+      # 确保日志目录存在
+      mkdir -p "$(dirname "$SOCKS5_LOG_FILE")"
+      
+      echo -e "${INFO} 使用后台进程启动SOCKS5服务..."
+      nohup "$SINGBOX_CMD" run -c "$SOCKS5_CONFIG_FILE" > "$SOCKS5_LOG_FILE" 2>&1 &
+      
+      # 等待进程启动
+      sleep 2
+      local new_pid=$(get_socks5_pid)
+      
+      if [[ -n "$new_pid" ]]; then
+        echo -e "${INFO} SOCKS5服务已成功启动，PID: $new_pid"
+        echo -e "${INFO} 日志文件: $SOCKS5_LOG_FILE"
+        return 0
+      else
+        echo -e "${ERROR} SOCKS5服务启动失败，请检查日志文件: $SOCKS5_LOG_FILE"
+        return 1
+      fi
     fi
   }
 
@@ -446,8 +481,27 @@ define_socks5_service_functions() {
       systemctl stop sing-box-socks5.service
       return $?
     else
-      echo -e "${ERROR} 不支持的系统，无法停止服务"
-      return 1
+      # 非systemd系统：使用kill停止进程
+      local pid=$(get_socks5_pid)
+      if [[ -z "$pid" ]]; then
+        echo -e "${INFO} SOCKS5服务未运行"
+        return 0
+      fi
+      
+      echo -e "${INFO} 停止SOCKS5服务，PID: $pid"
+      kill -15 "$pid" || kill -9 "$pid"
+      
+      # 等待进程停止
+      sleep 2
+      local remaining_pid=$(get_socks5_pid)
+      
+      if [[ -z "$remaining_pid" ]]; then
+        echo -e "${INFO} SOCKS5服务已成功停止"
+        return 0
+      else
+        echo -e "${ERROR} SOCKS5服务停止失败，可能需要手动终止进程: $remaining_pid"
+        return 1
+      fi
     fi
   }
 
@@ -457,8 +511,11 @@ define_socks5_service_functions() {
       systemctl restart sing-box-socks5.service
       return $?
     else
-      echo -e "${ERROR} 不支持的系统，无法重启服务"
-      return 1
+      # 非systemd系统：先停止后启动
+      stop_socks5
+      sleep 1
+      start_socks5
+      return $?
     fi
   }
 
@@ -468,8 +525,29 @@ define_socks5_service_functions() {
       systemctl status sing-box-socks5.service
       return $?
     else
-      echo -e "${ERROR} 不支持的系统，无法查看状态"
-      return 1
+      # 非systemd系统：检查进程是否运行
+      local pid=$(get_socks5_pid)
+      if [[ -n "$pid" ]]; then
+        echo -e "${INFO} SOCKS5服务正在运行"
+        echo -e "  PID: $pid"
+        echo -e "  配置文件: $SOCKS5_CONFIG_FILE"
+        echo -e "  日志文件: $SOCKS5_LOG_FILE"
+        
+        # 检查端口监听状态
+        if command -v ss >/dev/null 2>&1; then
+          local port_info=$(ss -tuln | grep -E ":${SOCKS5_PORT} " 2>/dev/null)
+          if [[ -n "$port_info" ]]; then
+            echo -e "  端口监听: $SOCKS5_PORT (已确认)"
+          else
+            echo -e "${WARNING} 端口 $SOCKS5_PORT 似乎未被监听"
+          fi
+        fi
+        
+        return 0
+      else
+        echo -e "${ERROR} SOCKS5服务未运行"
+        return 1
+      fi
     fi
   }
 }
