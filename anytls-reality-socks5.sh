@@ -109,7 +109,7 @@ install_missing_pkgs() {
     }
   elif [[ "$DISTRO_ID" =~ (debian|ubuntu) || "$DISTRO_LIKE" =~ (debian|ubuntu) ]]; then
     apt-get update -y -qq || true
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${to_install[@]}" || {
+    apt-get install -y -qq "${to_install[@]}" || {
       echo -e "${ERROR} apt-get 安装依赖失败：${to_install[*]}"
       return 1
     }
@@ -181,6 +181,19 @@ prompt_socks5() {
   SOCKS5_PASSWORD=""
   SOCKS5_UDP="true"
   SOCKS5_TCP_KEEPALIVE="true"
+  
+  # 检查并安装openssl
+  if ! command -v openssl >/dev/null 2>&1; then
+    echo -e "${INFO} 检测到缺少openssl，尝试自动安装..."
+    if install_missing_pkgs openssl; then
+      echo -e "${INFO} openssl安装成功"
+    else
+      echo -e "${WARNING} openssl安装失败，将使用备用方法生成随机值"
+      OPENSSL_AVAILABLE="false"
+    fi
+  else
+    OPENSSL_AVAILABLE="true"
+  fi
 
   # 检查端口可用性
   check_port_free "${SOCKS5_PORT}"
@@ -198,11 +211,21 @@ prompt_socks5() {
   
   if [[ -z "$input_username" ]]; then
     # 随机生成用户名（8位十六进制）
-    SOCKS5_USERNAME=$(openssl rand -hex 4)
+    if [[ "$OPENSSL_AVAILABLE" == "true" ]]; then
+      SOCKS5_USERNAME=$(openssl rand -hex 4)
+    else
+      # 备用随机生成方法
+      SOCKS5_USERNAME=$(date +%s%N | md5sum | head -c 8)
+    fi
     echo -e "${INFO} 已随机生成用户名: ${SOCKS5_USERNAME}"
     
     # 随机生成密码（16位十六进制）
-    SOCKS5_PASSWORD=$(openssl rand -hex 8)
+    if [[ "$OPENSSL_AVAILABLE" == "true" ]]; then
+      SOCKS5_PASSWORD=$(openssl rand -hex 8)
+    else
+      # 备用随机生成方法
+      SOCKS5_PASSWORD=$(date +%s%N | sha256sum | head -c 16)
+    fi
     echo -e "${INFO} 已随机生成密码: ${SOCKS5_PASSWORD}"
   else
     SOCKS5_USERNAME="$input_username"
@@ -211,7 +234,12 @@ prompt_socks5() {
     read -rp "请输入认证密码 [留空随机生成]: " input_password
     if [[ -z "$input_password" ]]; then
       # 随机生成密码（16位十六进制）
-      SOCKS5_PASSWORD=$(openssl rand -hex 8)
+      if [[ "$OPENSSL_AVAILABLE" == "true" ]]; then
+        SOCKS5_PASSWORD=$(openssl rand -hex 8)
+      else
+        # 备用随机生成方法
+        SOCKS5_PASSWORD=$(date +%s%N | sha256sum | head -c 16)
+      fi
       echo -e "${INFO} 已随机生成密码: ${SOCKS5_PASSWORD}"
     else
       # 输入并验证密码
@@ -227,7 +255,12 @@ prompt_socks5() {
           read -rp "请输入认证密码 [留空随机生成]: " input_password
           if [[ -z "$input_password" ]]; then
             # 随机生成密码（16位十六进制）
-            SOCKS5_PASSWORD=$(openssl rand -hex 8)
+            if [[ "$OPENSSL_AVAILABLE" == "true" ]]; then
+              SOCKS5_PASSWORD=$(openssl rand -hex 8)
+            else
+              # 备用随机生成方法
+              SOCKS5_PASSWORD=$(date +%s%N | sha256sum | head -c 16)
+            fi
             echo -e "${INFO} 已随机生成密码: ${SOCKS5_PASSWORD}"
             break
           fi
