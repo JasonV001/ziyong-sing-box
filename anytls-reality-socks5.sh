@@ -268,14 +268,9 @@ prompt_socks5() {
   fi
 
   # 注意：sing-box 1.12.0版本中SOCKS5 inbound的UDP功能默认开启，无需额外配置
-
-  # 选择是否启用TCP保活
-  read -rp "是否启用TCP保活 [y/n] [y]: " input_tcp_keepalive
-  if [[ "$input_tcp_keepalive" == "n" || "$input_tcp_keepalive" == "N" ]]; then
-    SOCKS5_TCP_KEEPALIVE="false"
-  else
-    SOCKS5_TCP_KEEPALIVE="true"
-  fi
+  # TCP保活功能也默认启用，无需用户配置
+  # 保持SOCKS5_TCP_KEEPALIVE变量用于信息文件，但不再需要用户输入
+  SOCKS5_TCP_KEEPALIVE="true"
 
   return 0
 }
@@ -330,6 +325,7 @@ EOF
 
   # 注意：sing-box 1.12.0 SOCKS5 inbound不再支持tcp_keepalive字段和udp字段
   # TCP保活和UDP功能默认启用，无需额外配置
+  # 确保配置中完全不包含这些不支持的字段
 
   # 完成配置
   cat >> "$SOCKS5_CONFIG_FILE" << EOF
