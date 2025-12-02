@@ -336,15 +336,8 @@ EOF
 EOF
   fi
 
-  # 添加UDP和TCP保活配置
-  local json_udp_value="true"
-  if [[ "$SOCKS5_UDP" == "false" ]]; then
-    json_udp_value="false"
-  fi
-  cat >> "$SOCKS5_CONFIG_FILE" << EOF
-      ,
-      "udp": $json_udp_value
-EOF
+  # 添加TCP保活配置（移除不支持的udp字段）
+  # sing-box 1.12.0 SOCKS5 inbound不再支持udp字段，UDP默认开启
   
   if [[ "$SOCKS5_TCP_KEEPALIVE" == "true" ]]; then
     cat >> "$SOCKS5_CONFIG_FILE" << EOF
