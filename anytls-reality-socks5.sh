@@ -63,7 +63,7 @@ SOCKS5_TCP_KEEPALIVE=""
 
 # 脚本自更新地址
 SCRIPT_URL="https://raw.githubusercontent.com/JasonV001/ziyong-sing-box/refs/heads/main/anytls-reality"
-SCRIPT_PATH="/usr/local/bin/anytls-reality.sh"
+SCRIPT_PATH="/usr/local/bin/anytls-reality-socks5.sh"
 
 # ===== 通用基础函数 =====
 check_root() {
@@ -90,10 +90,13 @@ install_missing_pkgs() {
   local to_install=()
   for p in "${pkgs[@]}"; do
     if ! command -v "$p" >/dev/null 2>&1; then
-      to_install+=("$p")
+      to_install+=(["$p"]) 
     fi
   done
-  [[ ${#to_install[@]} -eq 0 ]] && return 0
+
+  if [[ ${#to_install[@]} -eq 0 ]]; then
+    return 0
+  fi
 
   detect_distro
   echo -e "${INFO} 检测到缺少命令：${to_install[*]}，尝试自动安装..."
@@ -129,7 +132,7 @@ check_cmds_or_exit() {
   local missing=()
   for c in "${NEED_CMDS[@]}"; do
     if ! command -v "$c" >/dev/null 2>&1; then
-      missing+=("$c")
+      missing+=(["$c"]) 
     fi
   done
 
@@ -163,6 +166,296 @@ get_server_ip_simple() {
 
 has_systemctl() {
   command -v systemctl >/dev/null 2>&1
+}
+
+# ===== SOCKS5 配置函数 =====
+
+# SOCKS5 安装流程函数
+# 旧的install_socks5_flow函数定义已删除，新定义在脚本前面
+
+# 提示用户输入SOCKS5配置参数
+prompt_socks5() {
+  # 设置默认值
+  SOCKS5_PORT="${default_socks5_port}"
+  SOCKS5_USERNAME="${default_socks5_username}"
+  SOCKS5_PASSWORD="${default_socks5_password}"
+  SOCKS5_UDP="true"
+  SOCKS5_TCP_KEEPALIVE="true"
+
+  # 检查端口可用性
+  check_port_free "${SOCKS5_PORT}"
+  if [[ "$?" -eq 1 ]]; then
+    echo -e "${WARNING} 端口 ${SOCKS5_PORT} 已被占用，建议更换端口"
+  fi
+
+  # 输入端口
+  read -rp "请输入SOCKS5监听端口 [${SOCKS5_PORT}]: " input_port
+  [[ -n "$input_port" ]] && SOCKS5_PORT="$input_port"
+
+  # 输入用户名（可选）
+  read -rp "请输入认证用户名 [留空不设密码]: " input_username
+  [[ -n "$input_username" ]] && SOCKS5_USERNAME="$input_username"
+
+  # 如果设置了用户名，输入密码
+  if [[ -n "$SOCKS5_USERNAME" ]]; then
+    # 输入并验证密码
+    while true; do
+      read -rsp "请输入认证密码: " input_password
+      echo
+      read -rsp "请再次输入认证密码: " confirm_password
+      echo
+      
+      if [[ "$input_password" == "$confirm_password" ]]; then
+        SOCKS5_PASSWORD="$input_password"
+        break
+      else
+        echo -e "${ERROR} 两次输入的密码不一致，请重试"
+      fi
+    done
+  fi
+
+  # 选择是否启用UDP
+  read -rp "是否启用UDP转发 [y/n] [y]: " input_udp
+  if [[ "$input_udp" == "n" || "$input_udp" == "N" ]]; then
+    SOCKS5_UDP="false"
+  else
+    SOCKS5_UDP="true"
+  fi
+
+  # 选择是否启用TCP保活
+  read -rp "是否启用TCP保活 [y/n] [y]: " input_tcp_keepalive
+  if [[ "$input_tcp_keepalive" == "n" || "$input_tcp_keepalive" == "N" ]]; then
+    SOCKS5_TCP_KEEPALIVE="false"
+  else
+    SOCKS5_TCP_KEEPALIVE="true"
+  fi
+
+  return 0
+}
+
+# 生成SOCKS5配置文件
+write_socks5_config() {
+  # 确保配置目录存在
+  mkdir -p "$SOCKS5_CONFIG_DIR"
+
+  # 构建JSON配置
+  local config_content
+  config_content="cat > \"$SOCKS5_CONFIG_FILE\" << 'EOF'
+{
+  \"log\": {
+    \"level\": \"info\",
+    \"timestamp\": true
+  },
+  \"dns\": {
+    \"servers\": [
+      {\n        \"address\": \"8.8.8.8\",\n        \"detour\": \"direct\"\n      },
+      {\n        \"address\": \"1.1.1.1\",\n        \"detour\": \"direct\"\n      }
+    ],
+    \"rules\": []
+  },
+  \"inbounds\": [
+    {
+      \"type\": \"socks\",
+      \"tag\": \"socks5-inbound\",
+      \"listen\": \"[::]\",
+      \"listen_port\": $SOCKS5_PORT"
+
+  # 添加认证配置（如果有）
+  if [[ -n "$SOCKS5_USERNAME" && -n "$SOCKS5_PASSWORD" ]]; then
+    config_content="${config_content}
+      ,\n      \"users\": [
+        {\n          \"username\": \"$SOCKS5_USERNAME\",\n          \"password\": \"$SOCKS5_PASSWORD\"\n        }
+      ]"
+  fi
+
+  # 添加UDP和TCP保活配置
+  local json_udp_value="true"
+  if [[ "$SOCKS5_UDP" == "false" ]]; then
+    json_udp_value="false"
+  fi
+  config_content="${config_content}
+      ,\n      \"udp\": $json_udp_value"
+  
+  if [[ "$SOCKS5_TCP_KEEPALIVE" == "true" ]]; then
+    config_content="${config_content}
+      ,\n      \"tcp_keepalive\": true"
+  fi
+
+  # 完成配置
+  config_content="${config_content}
+    }
+  ],
+  \"outbounds\": [
+    {\n      \"type\": \"direct\",\n      \"tag\": \"direct\"\n    }
+  ],
+  \"route\": {
+    \"rules\": [],
+    \"final\": \"direct\",
+    \"auto_detect_interface\": true
+  }
+}
+EOF"
+
+  # 执行配置文件生成
+  eval "$config_content"
+
+  # 创建信息文件，用于后续读取配置
+  cat > "$SOCKS5_INFO_FILE" << EOF
+# SOCKS5 配置信息
+# 生成时间: $(date)
+PORT="$SOCKS5_PORT"
+USERNAME="$SOCKS5_USERNAME"
+PASSWORD="$SOCKS5_PASSWORD"
+UDP="$SOCKS5_UDP"
+TCP_KEEPALIVE="$SOCKS5_TCP_KEEPALIVE"
+EOF
+
+  return $?
+}
+
+# 创建SOCKS5系统服务
+create_socks5_service() {
+  # 检查是否有权限
+  if [[ "$EUID" -ne 0 ]]; then
+    echo -e "${ERROR} 创建服务需要root权限"
+    return 1
+  fi
+
+  # 创建服务文件
+  cat > "$SOCKS5_SERVICE_FILE" << EOF
+[Unit]
+Description=sing-box SOCKS5 Service
+Documentation=https://sing-box.sagernet.org/
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=${SOCKS5_CONFIG_DIR}
+ExecStart=${SINGBOX_CMD} run -c ${SOCKS5_CONFIG_FILE}
+Restart=always
+RestartSec=5
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=sing-box-socks5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  # 重新加载systemd
+  if has_systemctl; then
+    systemctl daemon-reload
+    systemctl enable sing-box-socks5.service
+  fi
+
+  return $?
+}
+
+# 管理SOCKS5服务函数
+define_socks5_service_functions() {
+  # 启动SOCKS5服务
+  start_socks5() {
+    if has_systemctl; then
+      systemctl start sing-box-socks5.service
+      return $?
+    else
+      echo -e "${ERROR} 不支持的系统，无法启动服务"
+      return 1
+    fi
+  }
+
+  # 停止SOCKS5服务
+  stop_socks5() {
+    if has_systemctl; then
+      systemctl stop sing-box-socks5.service
+      return $?
+    else
+      echo -e "${ERROR} 不支持的系统，无法停止服务"
+      return 1
+    fi
+  }
+
+  # 重启SOCKS5服务
+  restart_socks5() {
+    if has_systemctl; then
+      systemctl restart sing-box-socks5.service
+      return $?
+    else
+      echo -e "${ERROR} 不支持的系统，无法重启服务"
+      return 1
+    fi
+  }
+
+  # 查看SOCKS5服务状态
+  status_socks5() {
+    if has_systemctl; then
+      systemctl status sing-box-socks5.service
+      return $?
+    else
+      echo -e "${ERROR} 不支持的系统，无法查看状态"
+      return 1
+    fi
+  }
+}
+
+# 加载SOCKS5服务函数
+define_socks5_service_functions
+
+# 更新开机自启动（包含SOCKS5）
+update_autostart_with_socks5() {
+  if [[ "$EUID" -ne 0 ]]; then
+    echo -e "${WARNING} 需要root权限来更新开机自启动设置"
+    return 1
+  fi
+
+  if has_systemctl; then
+    # 创建或更新自动启动服务文件
+    cat > "/etc/systemd/system/anytls-reality-autostart.service" << EOF
+[Unit]
+Description=AnyTLS Reality SOCKS5 Autostart
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c "systemctl start anytls 2>/dev/null || true; systemctl start sing-box-reality.service 2>/dev/null || true; systemctl start sing-box-socks5.service 2>/dev/null || true"
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    
+    # 启用服务
+    systemctl daemon-reload
+    systemctl enable anytls-reality-autostart.service
+    echo -e "${INFO} 开机自启动设置已更新，包含SOCKS5"
+    return 0
+  else
+    echo -e "${ERROR} 不支持的系统，无法更新开机自启动"
+    return 1
+  fi
+}
+
+# 检查SOCKS5节点是否已安装
+socks5_installed() {
+  if [[ -f "$SOCKS5_CONFIG_FILE" && -f "$SOCKS5_SERVICE_FILE" && -n "$SINGBOX_CMD" ]]; then
+    return 0
+  else
+    return 1
+  fi
+}
+
+# 检查端口是否可用
+check_port_free() {
+  local port="$1"
+  if command -v ss >/dev/null 2>&1; then
+    ss -tuln | grep -q ":$port " && return 1 || return 0
+  elif command -v netstat >/dev/null 2>&1; then
+    netstat -tuln | grep -q ":$port " && return 1 || return 0
+  else
+    # 如果没有ss或netstat，返回未知状态
+    return 0
+  fi
 }
 
 # ===== AnyTLS (anytls-go) 部分 =====
@@ -212,17 +505,6 @@ download_anytls() {
   chmod +x "${ANYTLS_INSTALL_DIR}/${ANYTLS_BINARY_NAME}"
   rm -rf "${ANYTLS_TMP_DIR}"
   echo -e "${INFO} AnyTLS 二进制安装完成：${ANYTLS_INSTALL_DIR}/${ANYTLS_BINARY_NAME}"
-}
-
-check_port_free() {
-  local port="$1"
-  if command -v ss >/dev/null 2>&1; then
-    ss -ltnH "sport = :$port" | grep -q . && return 1 || return 0
-  elif command -v netstat >/dev/null 2>&1; then
-    netstat -ltn | awk '{print $4}' | grep -q ":$port\$" && return 1 || return 0
-  else
-    return 0
-  fi
 }
 
 configure_anytls() {
@@ -449,16 +731,6 @@ update_anytls() {
 
 # ===== Reality (sing-box VLESS-REALITY) 部分 =====
 
-find_singbox_cmd() {
-  if [[ -x "$SINGBOX_EXPECTED" ]]; then
-    SINGBOX_CMD="$SINGBOX_EXPECTED"
-  elif command -v sing-box >/dev/null 2>&1; then
-    SINGBOX_CMD=$(command -v sing-box)
-  else
-    SINGBOX_CMD=""
-  fi
-}
-
 get_singbox_arch_suffix() {
   case "$(uname -m)" in
     x86_64|amd64) echo "linux-amd64" ;;
@@ -468,6 +740,16 @@ get_singbox_arch_suffix() {
     s390x) echo "linux-s390x" ;;
     *) echo "" ;;
   esac
+}
+
+find_singbox_cmd() {
+  if [[ -x "$SINGBOX_EXPECTED" ]]; then
+    SINGBOX_CMD="$SINGBOX_EXPECTED"
+  elif command -v sing-box >/dev/null 2>&1; then
+    SINGBOX_CMD=$(command -v sing-box)
+  else
+    SINGBOX_CMD=""
+  fi
 }
 
 install_singbox_core() {
@@ -756,12 +1038,124 @@ uninstall_reality() {
   echo -e "${INFO} Reality 节点已卸载完成"
 }
 
+# ===== SOCKS5 安装函数 =====
+
+install_socks5_flow() {
+  # 检查并安装 sing-box
+  install_singbox_core
+  find_singbox_cmd
+  if [[ -z "$SINGBOX_CMD" ]]; then
+    echo -e "${ERROR} sing-box 未就绪，无法安装 SOCKS5 节点"
+    return 1
+  fi
+  
+  # 配置 SOCKS5 参数
+  prompt_socks5
+  
+  # 生成配置文件
+  write_socks5_config
+  
+  # 检查配置
+  if ! check_socks5_config; then
+    echo -e "${ERROR} SOCKS5 配置检查失败，请执行：sing-box check -c ${SOCKS5_CONFIG_FILE}"
+    return 1
+  fi
+  
+  # 创建服务并启动
+  create_socks5_service
+  start_socks5
+  
+  echo -e "${INFO} SOCKS5 节点已安装并启动"
+  show_socks5_info
+  
+  # 自动设置开机自启动
+  echo -e "\n${INFO} 正在更新开机自启动设置..."
+  update_autostart_with_socks5
+  
+  return 0
+}
+
+check_socks5_config() {
+  if [[ -z "$SINGBOX_CMD" ]]; then
+    return 0
+  fi
+  "$SINGBOX_CMD" check -c "$SOCKS5_CONFIG_FILE"
+}
+
+show_socks5_info() {
+  if [[ ! -f "$SOCKS5_INFO_FILE" ]]; then
+    echo -e "${ERROR} 未找到 SOCKS5 配置信息：${SOCKS5_INFO_FILE}"
+    return
+  fi
+  
+  # shellcheck disable=SC1090
+  . "$SOCKS5_INFO_FILE"
+  
+  local server_ip
+  server_ip=$(get_server_ip_simple)
+  
+  echo -e "${CYAN}SOCKS5 节点信息：${RESET}"
+  echo -e "  协议: socks5"
+  echo -e "  服务器 IP: ${server_ip}"
+  echo -e "  端口: ${PORT}"
+  
+  if [[ -n "$USERNAME" && -n "$PASSWORD" ]]; then
+    echo -e "  用户名: ${USERNAME}"
+    echo -e "  密码: ${PASSWORD}"
+  else
+    echo -e "  认证: 不需要"
+  fi
+  
+  echo -e "  UDP 支持: ${UDP}"
+  echo -e "  TCP Keepalive: ${TCP_KEEPALIVE}"
+  
+  # 生成 SOCKS5 URI
+  local host="$server_ip"
+  [[ "$server_ip" == *:* ]] && host="[$server_ip]"
+  local auth_part=""
+  
+  if [[ -n "$USERNAME" && -n "$PASSWORD" ]]; then
+    auth_part="${USERNAME}:${PASSWORD}@"
+  fi
+  
+  local uri="socks5://${auth_part}${host}:${PORT}#SOCKS5"
+  echo
+  echo -e "${CYAN}SOCKS5 URI：${RESET}"
+  echo -e "${YELLOW}${uri}${RESET}"
+}
+
+uninstall_socks5() {
+  echo -e "${WARNING} 即将卸载 SOCKS5 节点..."
+  read -rp "确认卸载 SOCKS5 节点 ? (y/N): " c
+  if [[ ! "$c" =~ ^[Yy]$ ]]; then
+    echo -e "${INFO} 已取消"
+    return
+  fi
+  
+  stop_socks5
+  
+  if has_systemctl; then
+    systemctl disable sing-box-socks5.service 2>/dev/null || true
+  fi
+  
+  rm -f "$SOCKS5_SERVICE_FILE"
+  rm -rf "$SOCKS5_CONFIG_DIR"
+  
+  if has_systemctl; then
+    systemctl daemon-reload
+  fi
+  
+  echo -e "${INFO} SOCKS5 节点已卸载完成"
+}
+
+# ===== 节点管理菜单 =====
 nodes_manage_menu() {
   echo -e "${CYAN}=== 节点管理 ===${RESET}"
   echo "1) 启动全部节点"
   echo "2) 停止全部节点"
   echo "3) 重启全部节点"
   echo "4) 查看服务状态"
+  echo "5) 单独管理 SOCKS5 节点"
   echo "0) 返回主菜单"
   read -rp "请选择: " opt
   case "$opt" in
@@ -769,37 +1163,117 @@ nodes_manage_menu() {
       start_anytls
       if has_systemctl; then
         systemctl start sing-box-reality.service 2>/dev/null || true
+        systemctl start sing-box-socks5.service 2>/dev/null || true
       else
-        pkill -f "sing-box run -c ${SINGBOX_REALITY_CONF}" 2>/dev/null || true
-        nohup "${SINGBOX_CMD}" run -c "${SINGBOX_REALITY_CONF}" >/var/log/singbox-reality.log 2>&1 &
+        # 非 systemd 系统启动 Reality
+        if [[ -f "${SINGBOX_REALITY_CONF}" ]]; then
+          pkill -f "sing-box run -c ${SINGBOX_REALITY_CONF}" 2>/dev/null || true
+          nohup "${SINGBOX_CMD}" run -c "${SINGBOX_REALITY_CONF}" >/var/log/singbox-reality.log 2>&1 &
+        fi
+        # 非 systemd 系统启动 SOCKS5
+        if [[ -f "${SOCKS5_CONFIG_FILE}" ]]; then
+          pkill -f "sing-box run -c ${SOCKS5_CONFIG_FILE}" 2>/dev/null || true
+          nohup "${SINGBOX_CMD}" run -c "${SOCKS5_CONFIG_FILE}" >/var/log/sing-box-socks5.log 2>&1 &
+        fi
       fi
+      echo -e "${INFO} 所有节点启动命令已发送"
       ;;
     2)
       stop_anytls
       if has_systemctl; then
         systemctl stop sing-box-reality.service 2>/dev/null || true
+        systemctl stop sing-box-socks5.service 2>/dev/null || true
       else
+        # 非 systemd 系统停止 Reality
         pkill -f "sing-box run -c ${SINGBOX_REALITY_CONF}" 2>/dev/null || true
+        # 非 systemd 系统停止 SOCKS5
+        pkill -f "sing-box run -c ${SOCKS5_CONFIG_FILE}" 2>/dev/null || true
       fi
+      echo -e "${INFO} 所有节点停止命令已发送"
       ;;
     3)
       restart_anytls
       if has_systemctl; then
         systemctl restart sing-box-reality.service 2>/dev/null || true
+        systemctl restart sing-box-socks5.service 2>/dev/null || true
       else
+        # 非 systemd 系统重启 Reality
         pkill -f "sing-box run -c ${SINGBOX_REALITY_CONF}" 2>/dev/null || true
         nohup "${SINGBOX_CMD}" run -c "${SINGBOX_REALITY_CONF}" >/var/log/singbox-reality.log 2>&1 &
+        # 非 systemd 系统重启 SOCKS5
+        pkill -f "sing-box run -c ${SOCKS5_CONFIG_FILE}" 2>/dev/null || true
+        nohup "${SINGBOX_CMD}" run -c "${SOCKS5_CONFIG_FILE}" >/var/log/sing-box-socks5.log 2>&1 &
       fi
+      echo -e "${INFO} 所有节点重启命令已发送"
       ;;
     4)
       if has_systemctl; then
+        echo -e "\n${CYAN}=== AnyTLS 服务状态 ===${RESET}"
         systemctl status anytls 2>/dev/null || echo "AnyTLS 服务不存在或未安装"
+        
+        echo -e "\n${CYAN}=== Reality 服务状态 ===${RESET}"
         systemctl status sing-box-reality.service 2>/dev/null || echo "Reality 服务不存在或未安装"
+        
+        echo -e "\n${CYAN}=== SOCKS5 服务状态 ===${RESET}"
+        systemctl status sing-box-socks5.service 2>/dev/null || echo "SOCKS5 服务不存在或未安装"
       else
         echo -e "${WARNING} 无 systemd，无法使用 systemctl 查看状态；请通过 ps/日志自行确认进程。"
+        echo -e "\n${INFO} 检查 AnyTLS 进程："
+        ps aux | grep anytls-server | grep -v grep || echo "未发现 AnyTLS 进程"
+        
+        echo -e "\n${INFO} 检查 Reality 进程："
+        ps aux | grep "sing-box run -c ${SINGBOX_REALITY_CONF}" | grep -v grep || echo "未发现 Reality 进程"
+        
+        echo -e "\n${INFO} 检查 SOCKS5 进程："
+        ps aux | grep "sing-box run -c ${SOCKS5_CONFIG_FILE}" | grep -v grep || echo "未发现 SOCKS5 进程"
       fi
       ;;
+    5)
+      socks5_manage_menu
+      ;;
   esac
+}
+
+# SOCKS5 节点管理菜单
+socks5_manage_menu() {
+  while true; do
+    echo -e "\n${CYAN}=== SOCKS5 节点管理 ===${RESET}"
+    echo "1) 启动 SOCKS5 节点"
+    echo "2) 停止 SOCKS5 节点"
+    echo "3) 重启 SOCKS5 节点"
+    echo "4) 查看 SOCKS5 配置信息"
+    echo "5) 重新配置 SOCKS5 节点"
+    echo "6) 卸载 SOCKS5 节点"
+    echo "0) 返回节点管理菜单"
+    read -rp "请选择: " opt
+    case "$opt" in
+      1)
+        start_socks5
+        ;;
+      2)
+        stop_socks5
+        ;;
+      3)
+        restart_socks5
+        ;;
+      4)
+        show_socks5_info
+        ;;
+      5)
+        install_socks5_flow
+        ;;
+      6)
+        uninstall_socks5
+        ;;
+      0)
+        break
+        ;;
+      *)
+        echo -e "${ERROR} 无效选项"
+        ;;
+    esac
+    echo
+  done
 }
 
 update_script() {
@@ -827,7 +1301,7 @@ uninstall_all() {
   if [[ -f "$SINGBOX_REALITY_CONF" || -f "$SINGBOX_REALITY_SERVICE" ]]; then
     uninstall_reality
   fi
-  if [[ -d "${SINGBOX_CONFIG_DIR}/socks5" || -f "/etc/systemd/system/sing-box-socks5.service" ]]; then
+  if [[ -d "${SOCKS5_CONFIG_DIR}" || -f "$SOCKS5_SERVICE_FILE" ]]; then
     uninstall_socks5
   fi
 }
@@ -845,7 +1319,7 @@ install_ar_shortcut() {
   local ar_path="/usr/local/bin/ar"
   cat >"$ar_path" <<'EOF'
 #!/usr/bin/env bash
-bash /usr/local/bin/anytls-reality.sh
+bash /usr/local/bin/anytls-reality-socks5.sh
 EOF
   chmod +x "$ar_path"
   echo -e "${INFO} 已创建快捷命令：ar  （在终端直接输入 ar 即可进入菜单）"
@@ -941,505 +1415,3 @@ main_menu() {
 # ===== 入口 =====
 check_root
 main_menu
-
-# 提示用户配置 SOCKS5 节点
-prompt_socks5() {
-  echo -e "${CYAN}=== SOCKS5 节点参数配置 ===${RESET}"
-  local port
-  
-  check_cmds_or_exit openssl
-  
-  while true; do
-    read -rp "SOCKS5 监听端口（留空则使用 ${default_socks5_port}）: " port
-    port="${port:-$default_socks5_port}"
-    if ! [[ "$port" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
-      echo -e "${ERROR} 端口必须是 1-65535 的数字"
-      continue
-    fi
-    if ! check_port_free "$port"; then
-      echo -e "${ERROR} 端口 ${port} 已被占用，请重新选择"
-      continue
-    fi
-    SOCKS5_PORT="$port"
-    break
-  done
-  
-  read -rp "SOCKS5 用户名（留空则不需要认证）: " SOCKS5_USERNAME
-  SOCKS5_USERNAME="${SOCKS5_USERNAME:-$default_socks5_username}"
-  
-  if [[ -n "$SOCKS5_USERNAME" ]]; then
-    read -rp "SOCKS5 密码: " SOCKS5_PASSWORD
-    SOCKS5_PASSWORD="${SOCKS5_PASSWORD:-$default_socks5_password}"
-    
-    if [[ -z "$SOCKS5_PASSWORD" ]]; then
-      echo -e "${ERROR} 已设置用户名，密码不能为空"
-      prompt_socks5
-      return
-    fi
-  fi
-  
-  while true; do
-    read -rp "是否启用 UDP 支持？(y/n，默认 y): " udp_choice
-    udp_choice="${udp_choice:-y}"
-    if [[ "$udp_choice" =~ ^[Yy]$ ]]; then
-      SOCKS5_UDP="true"
-      break
-    elif [[ "$udp_choice" =~ ^[Nn]$ ]]; then
-      SOCKS5_UDP="false"
-      break
-    else
-      echo -e "${ERROR} 请输入 y 或 n"
-    fi
-  done
-  
-  while true; do
-    read -rp "是否启用 TCP Keepalive？(y/n，默认 y): " keepalive_choice
-    keepalive_choice="${keepalive_choice:-y}"
-    if [[ "$keepalive_choice" =~ ^[Yy]$ ]]; then
-      SOCKS5_TCP_KEEPALIVE="true"
-      break
-    elif [[ "$keepalive_choice" =~ ^[Nn]$ ]]; then
-      SOCKS5_TCP_KEEPALIVE="false"
-      break
-    else
-      echo -e "${ERROR} 请输入 y 或 n"
-    fi
-  done
-}
-
-# 生成 SOCKS5 配置文件
-write_socks5_config() {
-  mkdir -p "${SINGBOX_CONFIG_DIR}/socks5"
-  
-  cat >"${SINGBOX_CONFIG_DIR}/socks5/config.json" <<EOF
-{
-  "log": {
-    "level": "info"
-  },
-  "inbounds": [
-    {
-      "type": "socks",
-      "tag": "socks5-in",
-      "listen": "::",
-      "listen_port": $SOCKS5_PORT
-EOF
-  
-  # 添加用户认证配置（如果有用户名和密码）
-  if [[ -n "$SOCKS5_USERNAME" && -n "$SOCKS5_PASSWORD" ]]; then
-    cat >>"${SINGBOX_CONFIG_DIR}/socks5/config.json" <<EOF
-      ,
-      "users": [
-        {
-          "username": "$SOCKS5_USERNAME",
-          "password": "$SOCKS5_PASSWORD"
-        }
-      ]
-EOF
-  fi
-  
-  # 添加UDP和TCP Keepalive配置
-  cat >>"${SINGBOX_CONFIG_DIR}/socks5/config.json" <<EOF
-      ,
-      "udp": $SOCKS5_UDP,
-      "tcp_keepalive": $SOCKS5_TCP_KEEPALIVE
-    }
-  ],
-  "outbounds": [
-    {
-      "type": "direct",
-      "tag": "direct"
-    },
-    {
-      "type": "block",
-      "tag": "block"
-    }
-  ]
-}
-EOF
-  
-  # 保存SOCKS5配置信息
-  cat >"${SINGBOX_CONFIG_DIR}/socks5/socks5.info" <<EOF
-PORT=$SOCKS5_PORT
-USERNAME=${SOCKS5_USERNAME:-""}
-PASSWORD=${SOCKS5_PASSWORD:-""}
-UDP=$SOCKS5_UDP
-TCP_KEEPALIVE=$SOCKS5_TCP_KEEPALIVE
-EOF
-  
-  echo -e "${INFO} SOCKS5配置已保存：${SINGBOX_CONFIG_DIR}/socks5/config.json"
-}
-
-# 创建 SOCKS5 服务
-create_socks5_service() {
-  if ! has_systemctl; then
-    echo -e "${WARNING} 未检测到 systemctl，将在无 systemd 系统上使用后台进程方式运行 SOCKS5"
-    return
-  fi
-  
-  cat >"/etc/systemd/system/sing-box-socks5.service" <<EOF
-[Unit]
-Description=sing-box SOCKS5 Server
-After=network.target nss-lookup.target
-
-[Service]
-User=root
-ExecStart=${SINGBOX_CMD} run -c ${SINGBOX_CONFIG_DIR}/socks5/config.json
-Restart=on-failure
-RestartSec=5s
-LimitNOFILE=infinity
-
-[Install]
-WantedBy=multi-user.target
-EOF
-  
-  systemctl daemon-reload
-  systemctl enable sing-box-socks5.service >/dev/null 2>&1 || true
-  echo -e "${INFO} SOCKS5 systemd 服务文件已创建：sing-box-socks5.service"
-}
-
-# 启动 SOCKS5 服务
-start_socks5() {
-  if has_systemctl; then
-    systemctl start sing-box-socks5.service || true
-    sleep 1
-    if systemctl is-active --quiet sing-box-socks5.service; then
-      echo -e "${INFO} SOCKS5 服务已启动"
-    else
-      echo -e "${ERROR} SOCKS5 服务启动失败，请执行：journalctl -u sing-box-socks5.service -n 20 --no-pager"
-    fi
-  else
-    pkill -f "sing-box run -c ${SINGBOX_CONFIG_DIR}/socks5/config.json" 2>/dev/null || true
-    nohup "${SINGBOX_CMD}" run -c "${SINGBOX_CONFIG_DIR}/socks5/config.json" >/var/log/sing-box-socks5.log 2>&1 &
-    echo -e "${INFO} SOCKS5 已在后台启动（无 systemd），日志：/var/log/sing-box-socks5.log"
-  fi
-}
-
-# 停止 SOCKS5 服务
-stop_socks5() {
-  if has_systemctl; then
-    systemctl stop sing-box-socks5.service 2>/dev/null || true
-    echo -e "${INFO} SOCKS5 systemd 服务已停止"
-  else
-    pkill -f "sing-box run -c ${SINGBOX_CONFIG_DIR}/socks5/config.json" 2>/dev/null || true
-    echo -e "${INFO} SOCKS5 后台进程已停止"
-  fi
-}
-
-# 重启 SOCKS5 服务
-restart_socks5() {
-  if has_systemctl; then
-    systemctl restart sing-box-socks5.service 2>/dev/null || true
-    sleep 1
-    if systemctl is-active --quiet sing-box-socks5.service; then
-      echo -e "${INFO} SOCKS5 服务已重启"
-    else
-      echo -e "${ERROR} SOCKS5 服务重启失败，请执行：journalctl -u sing-box-socks5.service -n 20 --no-pager"
-    fi
-  else
-    stop_socks5
-    start_socks5
-  fi
-}
-
-check_socks5_config() {
-  if [[ -z "$SINGBOX_CMD" ]]; then
-    return 0
-  fi
-  "$SINGBOX_CMD" check -c "$SOCKS5_CONFIG_FILE"
-}
-
-show_socks5_info() {
-  if [[ ! -f "$SOCKS5_INFO_FILE" ]]; then
-    echo -e "${ERROR} 未找到 SOCKS5 配置信息：${SOCKS5_INFO_FILE}"
-    return
-  fi
-  
-  # shellcheck disable=SC1090
-  . "$SOCKS5_INFO_FILE"
-  
-  local server_ip
-  server_ip=$(get_server_ip_simple)
-  
-  echo -e "${CYAN}SOCKS5 节点信息：${RESET}"
-  echo -e "  协议: socks5"
-  echo -e "  服务器 IP: ${server_ip}"
-  echo -e "  端口: ${PORT}"
-  
-  if [[ -n "$USERNAME" && -n "$PASSWORD" ]]; then
-    echo -e "  用户名: ${USERNAME}"
-    echo -e "  密码: ${PASSWORD}"
-  else
-    echo -e "  认证: 不需要"
-  fi
-  
-  echo -e "  UDP 支持: ${UDP}"
-  echo -e "  TCP Keepalive: ${TCP_KEEPALIVE}"
-  
-  # 生成 SOCKS5 URI
-  local host="$server_ip"
-  [[ "$server_ip" == *:* ]] && host="[$server_ip]"
-  local auth_part=""
-  
-  if [[ -n "$USERNAME" && -n "$PASSWORD" ]]; then
-    auth_part="${USERNAME}:${PASSWORD}@"
-  fi
-  
-  local uri="socks5://${auth_part}${host}:${PORT}#SOCKS5"
-  echo
-  echo -e "${CYAN}SOCKS5 URI：${RESET}"
-  echo -e "${YELLOW}${uri}${RESET}"
-}
-
-uninstall_socks5() {
-  echo -e "${WARNING} 即将卸载 SOCKS5 节点..."
-  read -rp "确认卸载 SOCKS5 节点 ? (y/N): " c
-  if [[ ! "$c" =~ ^[Yy]$ ]]; then
-    echo -e "${INFO} 已取消"
-    return
-  fi
-  
-  stop_socks5
-  
-  if has_systemctl; then
-    systemctl disable sing-box-socks5.service 2>/dev/null || true
-  fi
-  
-  rm -f "$SOCKS5_SERVICE_FILE"
-  rm -rf "$SOCKS5_CONFIG_DIR"
-  
-  if has_systemctl; then
-    systemctl daemon-reload
-  fi
-  
-  echo -e "${INFO} SOCKS5 节点已卸载完成"
-}
-
-install_socks5_flow() {
-  # 检查并安装 sing-box
-  install_singbox_core
-  find_singbox_cmd
-  if [[ -z "$SINGBOX_CMD" ]]; then
-    echo -e "${ERROR} sing-box 未就绪，无法安装 SOCKS5 节点"
-    return 1
-  fi
-  
-  # 配置 SOCKS5 参数
-  if ! prompt_socks5; then
-    echo -e "${ERROR} SOCKS5 配置失败"
-    return 1
-  fi
-  
-  # 生成配置文件
-  write_socks5_config
-  
-  # 检查配置
-  if ! check_socks5_config; then
-    echo -e "${ERROR} SOCKS5 配置检查失败，请执行：sing-box check -c ${SOCKS5_CONFIG_FILE}"
-    return 1
-  fi
-  
-  # 创建服务并启动
-  create_socks5_service
-  start_socks5
-  
-  echo -e "${INFO} SOCKS5 节点已安装并启动"
-  show_socks5_info
-  
-  # 自动设置开机自启动
-  echo -e "\n${INFO} 正在更新开机自启动设置..."
-  update_autostart_with_socks5
-  
-  return 0
-}
-
-# 更新开机自启动设置，包含 SOCKS5
-update_autostart_with_socks5() {
-  if has_systemctl; then
-    cat >"/etc/systemd/system/anytls-reality-autostart.service" <<EOF
-[Unit]
-Description=AnyTLS Reality SOCKS5 Autostart
-After=network.target
-
-[Service]
-Type=oneshot
-ExecStart=/bin/bash -c "systemctl start anytls 2>/dev/null || true; systemctl start sing-box-reality.service 2>/dev/null || true; systemctl start sing-box-socks5.service 2>/dev/null || true"
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    
-    systemctl daemon-reload
-    systemctl enable anytls-reality-autostart.service
-    echo -e "${INFO} 已更新开机自启动设置，包含 SOCKS5"
-  else
-    # 更新 rc.local
-    if [[ -f "/etc/rc.local" ]]; then
-      # 移除旧的启动命令
-      sed -i '/# Start AnyTLS and Reality services/,+12d' "/etc/rc.local" 2>/dev/null || true
-      
-      # 添加新的启动命令
-      sed -i '/exit 0/i # Start AnyTLS, Reality and SOCKS5 services\n\n# Start AnyTLS if it exists\nif [ -f "/etc/systemd/system/anytls.service" ]; then\n  systemctl start anytls 2>/dev/null || true\nfi\n\n# Start sing-box-reality if it exists\nif [ -f "/etc/systemd/system/sing-box-reality.service" ]; then\n  systemctl start sing-box-reality.service 2>/dev/null || true\nfi\n\n# Start sing-box-socks5 if it exists\nif [ -f "/etc/systemd/system/sing-box-socks5.service" ]; then\n  systemctl start sing-box-socks5.service 2>/dev/null || true\nfi\n' "/etc/rc.local"
-      echo -e "${INFO} 已更新 /etc/rc.local，添加 SOCKS5 启动命令"
-    fi
-  fi
-}
-
-# 扩展节点管理菜单，包含 SOCKS5
-nodes_manage_menu() {
-  echo -e "${CYAN}=== 节点管理 ===${RESET}"
-  echo "1) 启动全部节点"
-  echo "2) 停止全部节点"
-  echo "3) 重启全部节点"
-  echo "4) 查看服务状态"
-  echo "5) 单独管理 SOCKS5 节点"
-  echo "0) 返回节点管理菜单"
-  read -rp "请选择: " opt
-  case "$opt" in
-    1)
-      start_anytls
-      if has_systemctl; then
-        systemctl start sing-box-reality.service 2>/dev/null || true
-        systemctl start sing-box-socks5.service 2>/dev/null || true
-      else
-        # 非 systemd 系统启动 Reality
-        if [[ -f "${SINGBOX_REALITY_CONF}" ]]; then
-          pkill -f "sing-box run -c ${SINGBOX_REALITY_CONF}" 2>/dev/null || true
-          nohup "${SINGBOX_CMD}" run -c "${SINGBOX_REALITY_CONF}" >/var/log/singbox-reality.log 2>&1 &
-        fi
-        # 非 systemd 系统启动 SOCKS5
-        if [[ -f "${SINGBOX_CONFIG_DIR}/socks5/config.json" ]]; then
-          pkill -f "sing-box run -c ${SINGBOX_CONFIG_DIR}/socks5/config.json" 2>/dev/null || true
-          nohup "${SINGBOX_CMD}" run -c "${SINGBOX_CONFIG_DIR}/socks5/config.json" >/var/log/sing-box-socks5.log 2>&1 &
-        fi
-      fi
-      echo -e "${INFO} 所有节点启动命令已发送"
-      ;;
-    2)
-      stop_anytls
-      if has_systemctl; then
-        systemctl stop sing-box-reality.service 2>/dev/null || true
-        systemctl stop sing-box-socks5.service 2>/dev/null || true
-      else
-        # 非 systemd 系统停止 Reality
-        pkill -f "sing-box run -c ${SINGBOX_REALITY_CONF}" 2>/dev/null || true
-        # 非 systemd 系统停止 SOCKS5
-        pkill -f "sing-box run -c ${SINGBOX_CONFIG_DIR}/socks5/config.json" 2>/dev/null || true
-      fi
-      echo -e "${INFO} 所有节点停止命令已发送"
-      ;;
-    3)
-      restart_anytls
-      if has_systemctl; then
-        systemctl restart sing-box-reality.service 2>/dev/null || true
-        systemctl restart sing-box-socks5.service 2>/dev/null || true
-      else
-        # 非 systemd 系统重启 Reality
-        pkill -f "sing-box run -c ${SINGBOX_REALITY_CONF}" 2>/dev/null || true
-        nohup "${SINGBOX_CMD}" run -c "${SINGBOX_REALITY_CONF}" >/var/log/singbox-reality.log 2>&1 &
-        # 非 systemd 系统重启 SOCKS5
-        pkill -f "sing-box run -c ${SINGBOX_CONFIG_DIR}/socks5/config.json" 2>/dev/null || true
-        nohup "${SINGBOX_CMD}" run -c "${SINGBOX_CONFIG_DIR}/socks5/config.json" >/var/log/sing-box-socks5.log 2>&1 &
-      fi
-      echo -e "${INFO} 所有节点重启命令已发送"
-      ;;
-    4)
-      if has_systemctl; then
-        echo -e "\n${CYAN}=== AnyTLS 服务状态 ===${RESET}"
-        systemctl status anytls 2>/dev/null || echo "AnyTLS 服务不存在或未安装"
-        
-        echo -e "\n${CYAN}=== Reality 服务状态 ===${RESET}"
-        systemctl status sing-box-reality.service 2>/dev/null || echo "Reality 服务不存在或未安装"
-        
-        echo -e "\n${CYAN}=== SOCKS5 服务状态 ===${RESET}"
-        systemctl status sing-box-socks5.service 2>/dev/null || echo "SOCKS5 服务不存在或未安装"
-      else
-        echo -e "${WARNING} 无 systemd，无法使用 systemctl 查看状态；请通过 ps/日志自行确认进程。"
-        echo -e "\n${INFO} 检查 AnyTLS 进程："
-        ps aux | grep anytls-server | grep -v grep || echo "未发现 AnyTLS 进程"
-        
-        echo -e "\n${INFO} 检查 Reality 进程："
-        ps aux | grep "sing-box run -c ${SINGBOX_REALITY_CONF}" | grep -v grep || echo "未发现 Reality 进程"
-        
-        echo -e "\n${INFO} 检查 SOCKS5 进程："
-        ps aux | grep "sing-box run -c ${SINGBOX_CONFIG_DIR}/socks5/config.json" | grep -v grep || echo "未发现 SOCKS5 进程"
-      fi
-      ;;
-    5)
-      socks5_manage_menu
-      ;;
-  esac
-}
-
-# SOCKS5 节点管理菜单
-socks5_manage_menu() {
-  while true; do
-    echo -e "\n${CYAN}=== SOCKS5 节点管理 ===${RESET}"
-    echo "1) 启动 SOCKS5 节点"
-    echo "2) 停止 SOCKS5 节点"
-    echo "3) 重启 SOCKS5 节点"
-    echo "4) 查看 SOCKS5 配置信息"
-    echo "5) 重新配置 SOCKS5 节点"
-    echo "6) 卸载 SOCKS5 节点"
-    echo "0) 返回节点管理菜单"
-    read -rp "请选择: " opt
-    case "$opt" in
-      1)
-        start_socks5
-        ;;
-      2)
-        stop_socks5
-        ;;
-      3)
-        restart_socks5
-        ;;
-      4)
-        show_socks5_info
-        ;;
-      5)
-        install_socks5_flow
-        ;;
-      6)
-        uninstall_socks5
-        ;;
-      0)
-        break
-        ;;
-      *)
-        echo -e "${ERROR} 无效选项"
-        ;;
-    esac
-    echo
-  done
-}
-
-# 更新 show_all_nodes_info 函数，包含 SOCKS5 信息
-show_all_nodes_info() {
-  view_anytls_config
-  echo
-  show_reality_info
-  echo
-  show_socks5_info
-}
-
-# 更新 uninstall_all 函数，包含 SOCKS5 卸载
-uninstall_all() {
-  echo -e "${WARNING} 此操作会卸载 AnyTLS & Reality & SOCKS5 节点及其服务（保留 sing-box 二进制）"
-  read -rp "确认卸载全部节点? (y/N): " c
-  if [[ ! "$c" =~ ^[Yy]$ ]]; then
-    echo -e "${INFO} 已取消"
-    return
-  fi
-  
-  if [[ -f "$ANYTLS_CONFIG_FILE" || -f "$ANYTLS_SERVICE_FILE" ]]; then
-    uninstall_anytls
-  fi
-  if [[ -f "$SINGBOX_REALITY_CONF" || -f "$SINGBOX_REALITY_SERVICE" ]]; then
-    uninstall_reality
-  fi
-  if [[ -d "${SINGBOX_CONFIG_DIR}/socks5" || -f "/etc/systemd/system/sing-box-socks5.service" ]]; then
-    uninstall_socks5
-  fi
-}
-
-
-
