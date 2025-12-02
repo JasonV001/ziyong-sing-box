@@ -1,11 +1,16 @@
-# 一件安装sing-box
+# 一件安装
 
 ```
 wget -N -O /usr/local/bin/anytls-reality.sh https://raw.githubusercontent.com/JasonV001/ziyong-sing-box/refs/heads/main/anytls-reality.sh && chmod +x /usr/local/bin/anytls-reality.sh && bash /usr/local/bin/anytls-reality.sh
 ```
+
+```
+wget -N -O /usr/local/bin/anytls-reality-socks5.sh https://raw.githubusercontent.com/JasonV001/ziyong-sing-box/refs/heads/main/anytls-reality-socks5.sh && chmod +x /usr/local/bin/anytls-reality.sh && bash /usr/local/bin/anytls-reality-socks5.sh
+```
 # 再次运行
 ```
 bash /usr/local/bin/anytls-reality.sh
+bash /usr/local/bin/anytls-reality-socks5.sh
 ```
 </details>
 
