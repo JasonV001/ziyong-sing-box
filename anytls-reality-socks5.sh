@@ -753,11 +753,14 @@ prompt_socks5() {
     break
   done
 
+  # 用户名：可手动输入，留空则自动生成十六进制随机字符串
+  check_cmds_or_exit openssl
   while true; do
-    read -rp "SOCKS5 用户名（仅允许字母数字下划线）: " user
+    read -rp "SOCKS5 用户名（留空则自动生成 hex，仅允许字母数字下划线）: " user
     if [[ -z "$user" ]]; then
-      echo -e "${ERROR} 用户名不能为空"
-      continue
+      SOCKS5_USER=$(openssl rand -hex 4)
+      echo -e "${INFO} 已自动生成 SOCKS5 用户名 (hex): ${SOCKS5_USER}"
+      break
     fi
     if ! [[ "$user" =~ ^[a-zA-Z0-9_]+$ ]]; then
       echo -e "${ERROR} 用户名仅允许字母、数字和下划线"
@@ -767,12 +770,14 @@ prompt_socks5() {
     break
   done
 
+  # 密码：可手动输入，留空则自动生成十六进制随机字符串
   while true; do
-    read -rsp "SOCKS5 密码: " pass
+    read -rsp "SOCKS5 密码（留空则自动生成 hex）: " pass
     echo
     if [[ -z "$pass" ]]; then
-      echo -e "${ERROR} 密码不能为空"
-      continue
+      SOCKS5_PASS=$(openssl rand -hex 8)
+      echo -e "${INFO} 已自动生成 SOCKS5 密码 (hex): ${SOCKS5_PASS}"
+      break
     fi
     SOCKS5_PASS="$pass"
     break
@@ -862,7 +867,7 @@ start_socks5() {
     fi
   else
     pkill -f "danted" 2>/dev/null || true
-    nohup /usr/sbin/danted -f "$SOCKS5_CONFIG_FILE" >/var/log/danted.log 2>&1 &
+    nohup danted -f "$SOCKS5_CONFIG_FILE" >/var/log/danted.log 2>&1 &
     echo -e "${INFO} SOCKS5 (Dante) 已在后台启动（无 systemd），日志：/var/log/danted.log"
   fi
 }
