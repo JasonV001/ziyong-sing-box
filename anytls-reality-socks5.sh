@@ -303,11 +303,13 @@ write_socks5_config() {
   "dns": {
     "servers": [
       {
-        "address": "8.8.8.8",
+        "type": "udp",
+        "server": "8.8.8.8",
         "detour": "direct"
       },
       {
-        "address": "1.1.1.1",
+        "type": "udp",
+        "server": "1.1.1.1",
         "detour": "direct"
       }
     ],
@@ -317,7 +319,7 @@ write_socks5_config() {
     {
       "type": "socks",
       "tag": "socks5-inbound",
-      "listen": "[::]",
+      "listen": "::",
       "listen_port": $SOCKS5_PORT
 EOF
 
