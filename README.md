@@ -12,6 +12,9 @@ wget -N -O /usr/local/bin/socks5.sh https://raw.githubusercontent.com/JasonV001/
 bash /usr/local/bin/anytls-reality.sh
 bash /usr/local/bin/anytls-reality-socks5.sh
 ```
+```
+(curl -LfsS https://raw.githubusercontent.com/0xdabiaoge/MTProxy/main/mtp.sh -o /usr/local/bin/mtp || wget -q https://raw.githubusercontent.com/0xdabiaoge/MTProxy/main/mtp.sh -O /usr/local/bin/mtp) && chmod +x /usr/local/bin/mtp && mtp
+```
 </details>
 
 # 手动开机重启sing-box-Alpine
