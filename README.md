@@ -1,17 +1,18 @@
-# 一件安装
+# anytls-reality一件安装
 
 ```
 wget -N -O /usr/local/bin/anytls-reality.sh https://raw.githubusercontent.com/JasonV001/ziyong-sing-box/refs/heads/main/anytls-reality.sh && chmod +x /usr/local/bin/anytls-reality.sh && bash /usr/local/bin/anytls-reality.sh
-```
-
-```
-wget -N -O /usr/local/bin/socks5.sh https://raw.githubusercontent.com/JasonV001/ziyong-sing-box/refs/heads/main/socks5.sh && chmod +x /usr/local/bin/socks5.sh && bash /usr/local/bin/socks5.sh
 ```
 # 再次运行
 ```
 bash /usr/local/bin/anytls-reality.sh
 bash /usr/local/bin/anytls-reality-socks5.sh
 ```
+# socks5一件安装
+```
+wget -N -O /usr/local/bin/socks5.sh https://raw.githubusercontent.com/JasonV001/ziyong-sing-box/refs/heads/main/socks5.sh && chmod +x /usr/local/bin/socks5.sh && bash /usr/local/bin/socks5.sh
+```
+# MTProxy快捷命令：mtp
 ```
 (curl -LfsS https://raw.githubusercontent.com/0xdabiaoge/MTProxy/main/mtp.sh -o /usr/local/bin/mtp || wget -q https://raw.githubusercontent.com/0xdabiaoge/MTProxy/main/mtp.sh -O /usr/local/bin/mtp) && chmod +x /usr/local/bin/mtp && mtp
 ```
