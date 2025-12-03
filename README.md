@@ -14,7 +14,7 @@ wget -N -O /usr/local/bin/socks5.sh https://raw.githubusercontent.com/JasonV001/
 ```
 # MTProxy快捷命令：mtp
 ```
-(curl -LfsS https://raw.githubusercontent.com/0xdabiaoge/MTProxy/main/mtp.sh -o /usr/local/bin/mtp || wget -q https://raw.githubusercontent.com/0xdabiaoge/MTProxy/main/mtp.sh -O /usr/local/bin/mtp) && chmod +x /usr/local/bin/mtp && mtp
+(curl -LfsS https://raw.githubusercontent.com/JasonV001/ziyong-sing-box/refs/heads/main/mtp.sh -o /usr/local/bin/mtp || wget -q https://raw.githubusercontent.com/JasonV001/ziyong-sing-box/refs/heads/main/mtp.sh -O /usr/local/bin/mtp) && chmod +x /usr/local/bin/mtp && mtp
 ```
 </details>
 
