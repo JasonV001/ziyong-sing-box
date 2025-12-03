@@ -1,4 +1,4 @@
-# anytls-reality一件安装
+# anytls-reality快捷键：ar
 
 ```
 wget -N -O /usr/local/bin/anytls-reality.sh https://raw.githubusercontent.com/JasonV001/ziyong-sing-box/refs/heads/main/anytls-reality.sh && chmod +x /usr/local/bin/anytls-reality.sh && bash /usr/local/bin/anytls-reality.sh
