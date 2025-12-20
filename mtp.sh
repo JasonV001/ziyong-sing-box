@@ -1,174 +1,181 @@
-#!/usr/bin/env sh
+#!/bin/bash
 
-# 遇到错误立即退出
-set -e
+# 全局配置
+WORKDIR="/opt/mtproxy"
+CONFIG_DIR="$WORKDIR/config"
+LOG_DIR="$WORKDIR/logs"
+BIN_DIR="$WORKDIR/bin"
 
-# --- 全局配置 ---
-BIN_PATH="/usr/local/bin/mtg"
-CONFIG_DIR="/etc/mtg"
-RELEASE_BASE_URL="https://github.com/9seconds/mtg/releases/download/v2.1.7"
+# 获取脚本绝对路径 (兼容 Alpine/Debian)
+SCRIPT_PATH=$(readlink -f "$0" 2>/dev/null)
+if [ -z "$SCRIPT_PATH" ]; then
+    # Fallback if readlink fails
+    SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+fi
 
-# --- 功能函数 ---
+# 颜色定义
+RED='\033[31m'
+GREEN='\033[32m'
+YELLOW='\033[33m'
+BLUE='\033[36m'
+PLAIN='\033[0m'
 
-# 0. BBR 检测与开启
-# =================================
-check_and_enable_bbr() {
-    echo "正在检测 TCP BBR 状态..."
-    # 尝试加载模块 (针对 Alpine 等需要手动加载的情况)
-    modprobe tcp_bbr >/dev/null 2>&1 || true
+# 系统检测
+OS=""
+PACKAGE_MANAGER=""
+INIT_SYSTEM=""
 
-    if sysctl net.ipv4.tcp_congestion_control | grep -q "bbr"; then
-        echo "检测到 BBR 已开启，跳过。"
-    else
-        echo "BBR 未开启，正在尝试开启..."
-        # 备份 sysctl.conf
-        if [ -f /etc/sysctl.conf ]; then cp /etc/sysctl.conf /etc/sysctl.conf.bak; fi
-        
-        # 写入配置
-        echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
-        echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
-        
-        # 应用配置
-        sysctl -p
-        
-        # 二次验证
-        if sysctl net.ipv4.tcp_congestion_control | grep -q "bbr"; then
-            echo "BBR 开启成功！"
-        else
-            echo "警告: BBR 开启失败。可能是内核不支持 (如 OpenVZ 容器或老旧内核)。"
-        fi
+check_sys() {
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        OS=$ID
     fi
-    echo "-------------------------------------------------"
+
+    if [ -f /etc/alpine-release ]; then
+        OS="alpine"
+        PACKAGE_MANAGER="apk"
+        INIT_SYSTEM="openrc"
+    elif [[ "$OS" == "debian" || "$OS" == "ubuntu" ]]; then
+        PACKAGE_MANAGER="apt"
+        INIT_SYSTEM="systemd"
+    elif [[ "$OS" == "centos" || "$OS" == "rhel" ]]; then
+        PACKAGE_MANAGER="yum"
+        INIT_SYSTEM="systemd"
+    else
+        echo -e "${RED}不支持的系统: $OS${PLAIN}"
+        exit 1
+    fi
 }
 
-# 1. 系统与环境检测
-# =================================
+install_base_deps() {
+    echo -e "${BLUE}正在安装基础依赖...${PLAIN}"
+    if [[ "$PACKAGE_MANAGER" == "apk" ]]; then
+        apk update
+        apk add curl wget tar ca-certificates openssl bash
+    elif [[ "$PACKAGE_MANAGER" == "apt" ]]; then
+        apt-get update
+        apt-get install -y curl wget tar
+    elif [[ "$PACKAGE_MANAGER" == "yum" ]]; then
+        yum install -y curl wget tar
+    fi
+}
 
-check_init_system() {
-    # 优先检测 OpenRC (Alpine 特征)
-    if [ -f /etc/alpine-release ] || [ -f /sbin/openrc-run ]; then
-        INIT_SYSTEM="openrc"
-        echo "检测到系统环境: Alpine / OpenRC"
-    # 其次检测 Systemd
-    elif command -v systemctl >/dev/null 2>&1; then
-        INIT_SYSTEM="systemd"
-        echo "检测到系统环境: Systemd"
-    else
-        echo "错误: 本脚本仅支持 Systemd (CentOS7+, Debian8+) 或 OpenRC (Alpine)。"
-        echo "当前系统未检测到受支持的初始化系统，脚本退出。"
+get_public_ip() {
+    curl -s https://api.ip.sb/ip -A Mozilla --ipv4 || curl -s https://ipinfo.io/ip -A Mozilla
+}
+
+generate_secret() {
+    head -c 16 /dev/urandom | od -A n -t x1 | tr -d ' \n'
+}
+
+# --- Python 版安装逻辑 ---
+install_mtp_python() {
+    echo -e "${BLUE}正在从 GitHub 下载 Python 版二进制文件...${PLAIN}"
+    
+    # 检测系统类型以选择正确的二进制
+    TARGET_BIN="mtp-python-debian"
+    if [[ "$OS" == "alpine" ]]; then
+        TARGET_BIN="mtp-python-alpine"
+    fi
+    
+    DOWNLOAD_URL="https://github.com/0xdabiaoge/MTProxy/releases/download/mtg-python/${TARGET_BIN}"
+    
+    mkdir -p "$BIN_DIR"
+    wget -O "$BIN_DIR/mtp-python" "$DOWNLOAD_URL"
+    
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}下载失败！请检查网络连接或 GitHub地址是否正确。${PLAIN}"
         exit 1
     fi
     
+    chmod +x "$BIN_DIR/mtp-python"
+    echo -e "${GREEN}下载成功: $TARGET_BIN${PLAIN}"
+
+    # 配置向导
+    read -p "请输入端口 (默认 443): " PORT
+    [ -z "$PORT" ] && PORT=443
+    
+    read -p "请输入伪装域名 (默认 azure.microsoft.com): " DOMAIN
+    [ -z "$DOMAIN" ] && DOMAIN="azure.microsoft.com"
+    
+    read -p "请输入推广 TAG (留空则不设置): " ADTAG
+    
+    SECRET=$(generate_secret)
+    echo -e "${GREEN}生成的密钥: $SECRET${PLAIN}"
+    
+    # 生成配置文件
     mkdir -p "$CONFIG_DIR"
+    cat > "$CONFIG_DIR/config.py" <<EOF
+PORT = $PORT
+USERS = {
+    "tg": "$SECRET"
 }
+MODES = {
+    "classic": False,
+    "secure": False,
+    "tls": True
+}
+TLS_DOMAIN = "$DOMAIN"
+EOF
 
-check_deps() {
-    required_cmds="curl grep cut uname tar mktemp awk find head ps"
+    if [ -n "$ADTAG" ]; then
+        echo "AD_TAG = \"$ADTAG\"" >> "$CONFIG_DIR/config.py"
+    fi
+
+    # 创建服务 (传入模式参数)
+    # 创建服务 (强制使用二进制模式)
+    create_service_python 1
     
-    deps_ok=true
-    for cmd in $required_cmds; do
-        if ! command -v "$cmd" >/dev/null 2>&1; then
-            deps_ok=false; echo "错误: 缺少核心命令: $cmd";
-        fi
-    done
-
-    if $deps_ok; then return; fi
-
-    echo
-    read -p "脚本依赖缺失，是否尝试自动安装？ (y/N): " answer
-    if [ "$answer" != "y" ] && [ "$answer" != "Y" ]; then
-        echo "错误: 缺少依赖，脚本无法继续运行！"; exit 1;
-    fi
-
-    if [ -f /etc/os-release ]; then . /etc/os-release; fi
-
-    # 简单的包管理器判断
-    if command -v apk >/dev/null 2>&1; then
-        apk add --no-cache curl grep coreutils tar procps
-    elif command -v apt-get >/dev/null 2>&1; then
-        apt-get update && apt-get install -y curl grep coreutils tar procps
-    elif command -v yum >/dev/null 2>&1; then
-        yum install -y curl grep coreutils tar procps
-    else
-        echo "警告: 无法自动安装依赖，请手动安装所需工具。"
-    fi
-}
-
-detect_arch() {
-    arch=$(uname -m)
-    case "$arch" in
-        x86_64) echo "amd64" ;;
-        i386|i686) echo "386" ;;
-        aarch64) echo "arm64" ;;
-        armv7l) echo "armv7" ;;
-        armv6l) echo "armv6" ;;
-        *) echo "unsupported" ;;
-    esac
-}
-
-# 2. 核心安装与配置
-# =================================
-
-get_mtg_config() {
-    service_type="$1"
-    other_type=""
-    if [ "$service_type" = "secured" ]; then other_type="faketls"; else other_type="secured"; fi
-    other_config_file="${CONFIG_DIR}/config_${other_type}"
-    other_port=""
-
-    if [ -f "$other_config_file" ]; then
-        other_port=$(grep 'PORT=' "$other_config_file" | cut -d'=' -f2)
-    fi
-
-    echo
-    echo "--- 配置 [${service_type}] 代理 ---"
-    
-    if [ "$service_type" = "faketls" ]; then
-        read -p "请输入用于伪装的域名 (默认 www.microsoft.com): " FAKE_TLS_DOMAIN
-        if [ -z "$FAKE_TLS_DOMAIN" ]; then FAKE_TLS_DOMAIN="www.microsoft.com"; fi
-        SECRET=$("$BIN_PATH" generate-secret --hex "$FAKE_TLS_DOMAIN")
-    else
-        SECRET=$("$BIN_PATH" generate-secret "secured")
-    fi
-
-    while true; do
-        read -p "请输入监听端口 (留空随机): " PORT
-        if [ -z "$PORT" ]; then PORT=$((10000 + RANDOM % 45535)); fi
-        
-        if [ -n "$other_port" ] && [ "$PORT" = "$other_port" ]; then
-            echo "错误: 端口 $PORT 已被 [${other_type}] 实例占用，请重新输入。"
+    # 检查服务状态
+    sleep 2
+    if [[ "$INIT_SYSTEM" == "systemd" ]]; then
+        if systemctl is-active --quiet mtp-python; then
+            echo -e "${GREEN}安装完成! 服务已启动。${PLAIN}"
+            show_info_python "$PORT" "$SECRET" "$DOMAIN"
         else
-            break
+            echo -e "${RED}服务启动失败！日志如下：${PLAIN}"
+            journalctl -u mtp-python --no-pager -n 20
         fi
-    done
+    else
+        if rc-service mtp-python status | grep -q "started"; then
+            echo -e "${GREEN}安装完成! 服务已启动。${PLAIN}"
+            show_info_python "$PORT" "$SECRET" "$DOMAIN"
+        else
+            echo -e "${RED}服务启动失败！${PLAIN}"
+            # Alpine 日志位置
+            if [ -f "/var/log/mtp-python.log" ]; then
+                 tail -n 20 /var/log/mtp-python.log
+            else
+                 echo -e "${YELLOW}无日志文件生成。${PLAIN}"
+            fi
+        fi
+    fi
 }
 
-save_config() {
-    service_type="$1"
-    config_file="${CONFIG_DIR}/config_${service_type}"
-    echo "PORT=${PORT}" > "$config_file"
-    echo "SECRET=${SECRET}" >> "$config_file"
-}
 
-# 注册服务 (分流处理 Systemd 和 OpenRC)
-setup_service_file() {
-    service_type="$1"
-    . "${CONFIG_DIR}/config_${service_type}"
+create_service_python() {
+    USE_BINARY=$1
+    echo -e "${BLUE}正在创建服务...${PLAIN}"
     
-    if [ "$INIT_SYSTEM" = "systemd" ]; then
-        # --- Systemd 逻辑 ---
-        service_name="mtg-${service_type}"
-        service_file="/etc/systemd/system/${service_name}.service"
-        echo "正在创建 Systemd 服务文件: ${service_file} ..."
-        
-        cat > "$service_file" <<EOF
+    if [ "$USE_BINARY" == "1" ]; then
+        EXEC_CMD="$BIN_DIR/mtp-python $CONFIG_DIR/config.py"
+        # 二进制模式下，不需要进入源码目录 (该目录可能不存在)
+        SERVICE_WORKDIR="$WORKDIR"
+    else
+        EXEC_CMD="/usr/bin/python3 mtprotoproxy.py $CONFIG_DIR/config.py"
+        SERVICE_WORKDIR="$WORKDIR/mtprotoproxy"
+    fi
+    
+    if [[ "$INIT_SYSTEM" == "systemd" ]]; then
+        cat > /etc/systemd/system/mtp-python.service <<EOF
 [Unit]
-Description=MTG Proxy Service (${service_type})
+Description=MTProto Proxy (Python)
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=${BIN_PATH} simple-run 0.0.0.0:${PORT} ${SECRET}
+WorkingDirectory=$SERVICE_WORKDIR
+ExecStart=$EXEC_CMD
 Restart=always
 RestartSec=3
 LimitNOFILE=65535
@@ -177,224 +184,670 @@ LimitNOFILE=65535
 WantedBy=multi-user.target
 EOF
         systemctl daemon-reload
-        systemctl enable "${service_name}"
-        echo "Systemd 服务 [${service_name}] 已设置为开机自启。"
-
-    elif [ "$INIT_SYSTEM" = "openrc" ]; then
-        # --- OpenRC 逻辑 (Alpine) ---
-        service_name="mtg-${service_type}"
-        service_file="/etc/init.d/${service_name}"
-        echo "正在创建 OpenRC 服务脚本: ${service_file} ..."
-
-        cat > "$service_file" <<EOF
+        systemctl enable mtp-python
+        systemctl restart mtp-python
+        
+    elif [[ "$INIT_SYSTEM" == "openrc" ]]; then
+        cat > /etc/init.d/mtp-python <<EOF
 #!/sbin/openrc-run
 
-name="mtg-${service_type}"
-description="MTG Proxy Service (${service_type})"
-command="${BIN_PATH}"
-command_args="simple-run 0.0.0.0:${PORT} ${SECRET}"
+name="mtp-python"
+description="MTProto Proxy (Python)"
+directory="$SERVICE_WORKDIR"
+command="${EXEC_CMD%% *}" 
+command_args="${EXEC_CMD#* }"
 supervisor="supervise-daemon"
-pidfile="/run/${service_name}.pid"
-respawn_delay=3
+respawn_delay=5
 respawn_max=0
+rc_ulimit="-n 65535"
+pidfile="/run/mtp-python.pid"
+output_log="/var/log/mtp-python.log"
+error_log="/var/log/mtp-python.log"
 
 depend() {
     need net
     after firewall
 }
 EOF
-        chmod +x "$service_file"
-        rc-update add "${service_name}" default
-        echo "OpenRC 服务 [${service_name}] 已添加至默认启动级别。"
+        chmod +x /etc/init.d/mtp-python
+        rc-update add mtp-python default
+        rc-service mtp-python restart
     fi
 }
 
+show_info_python() {
+    IP=$(get_public_ip)
+    HEX_DOMAIN=$(echo -n "$3" | od -A n -t x1 | tr -d ' \n')
+    FULL_SECRET="ee$2$HEX_DOMAIN"
+    
+    echo -e "=============================="
+    echo -e "      算 法 信 息 (Python)"
+    echo -e "=============================="
+    echo -e "IP: $IP"
+    echo -e "端口: $1"
+    echo -e "Secret: $FULL_SECRET"
+    echo -e "Domain: $3"
+    echo -e "=============================="
+    echo -e "tg://proxy?server=$IP&port=$1&secret=$FULL_SECRET"
+}
+
+
+# --- Go 版 (mtg) 安装逻辑 ---
 install_mtg() {
-    service_type="$1"
+    # 架构检测
+    ARCH=$(uname -m)
+    case $ARCH in
+        x86_64) MTG_ARCH="amd64" ;;
+        aarch64) MTG_ARCH="arm64" ;;
+        *) echo "不支持的架构: $ARCH"; exit 1 ;;
+    esac
     
-    if ! [ -f "$BIN_PATH" ]; then
-        ARCH=$(detect_arch)
-        if [ "$ARCH" = "unsupported" ]; then echo "错误: 不支持的系统架构：$(uname -m)"; exit 1; fi
-        
-        TAR_NAME="mtg-2.1.7-linux-${ARCH}.tar.gz"; DOWNLOAD_URL="${RELEASE_BASE_URL}/${TAR_NAME}"
-        TMP_DIR=$(mktemp -d); trap 'rm -rf -- "$TMP_DIR"' EXIT
-        echo "正在下载主程序 ${DOWNLOAD_URL} …"; curl -L "${DOWNLOAD_URL}" -o "${TMP_DIR}/${TAR_NAME}"
-        echo "正在解压文件..."; tar -xzf "${TMP_DIR}/${TAR_NAME}" -C "${TMP_DIR}"
-        
-        MTG_FOUND_PATH=$(find "${TMP_DIR}" -type f -name mtg | head -n 1)
-        if [ -z "$MTG_FOUND_PATH" ]; then echo "错误：未找到 mtg 可执行文件！"; exit 1; fi
-
-        mv "${MTG_FOUND_PATH}" "${BIN_PATH}"; chmod +x "${BIN_PATH}"
-    fi
-
-    get_mtg_config "$service_type"
-    save_config "$service_type"
-    setup_service_file "$service_type" # 生成并启用服务
-
-    restart_service "$service_type"
-    echo "[$service_type] 实例安装/更新完成！"
-}
-
-# 3. 服务管理 (兼容层)
-# =================================
-
-start_service() {
-    service_type="$1"
-    config_file="${CONFIG_DIR}/config_${service_type}"
-    if ! [ -f "$config_file" ]; then echo "错误: [$service_type] 未配置。"; return 1; fi
+    # 从用户 GitHub 下载 mtg 二进制文件
+    echo -e "${BLUE}正在从 GitHub 下载 mtg ($MTG_ARCH)...${PLAIN}"
+    mkdir -p "$BIN_DIR"
     
-    echo "正在启动 [$service_type] ..."
-    if [ "$INIT_SYSTEM" = "systemd" ]; then
-        systemctl start "mtg-${service_type}"
-    else
-        rc-service "mtg-${service_type}" start
-    fi
-    sleep 1
-    if is_running "$service_type"; then echo "启动成功。"; else echo "启动失败，请检查日志。"; fi
-}
-
-stop_service() {
-    service_type="$1"
-    echo "正在停止 [$service_type] ..."
-    if [ "$INIT_SYSTEM" = "systemd" ]; then
-        systemctl stop "mtg-${service_type}"
-    else
-        rc-service "mtg-${service_type}" stop
-    fi
-}
-
-restart_service() {
-    service_type="$1"
-    echo "正在重启 [$service_type] ..."
-    if [ "$INIT_SYSTEM" = "systemd" ]; then
-        systemctl restart "mtg-${service_type}"
-    else
-        rc-service "mtg-${service_type}" restart
-    fi
-}
-
-is_running() {
-    service_type="$1"
-    if [ "$INIT_SYSTEM" = "systemd" ]; then
-        systemctl is-active --quiet "mtg-${service_type}"
-        return $?
-    else
-        rc-service "mtg-${service_type}" status >/dev/null 2>&1
-        return $?
-    fi
-}
-
-# 4. 辅助功能
-# =================================
-
-uninstall_mtg() {
-    service_type="$1"
-    config_file="${CONFIG_DIR}/config_${service_type}"
+    FILENAME="mtg-2.1.7-linux-${MTG_ARCH}"
+    DOWNLOAD_URL="https://github.com/0xdabiaoge/MTProxy/releases/download/mtg-python/${FILENAME}.tar.gz"
     
-    echo
-    read -p "您确定要卸载 [$service_type] 实例吗？ (y/N): " confirm
-    if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then echo "操作已取消。"; return; fi
-
-    echo "开始卸载 [$service_type] ..."
-    stop_service "$service_type"
+    wget -O "mtg.tar.gz" "$DOWNLOAD_URL"
     
-    # 清理服务文件
-    if [ "$INIT_SYSTEM" = "systemd" ]; then
-        systemctl disable "mtg-${service_type}" >/dev/null 2>&1 || true
-        rm -f "/etc/systemd/system/mtg-${service_type}.service"
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}下载失败！请检查网络连接或文件名。${PLAIN}"
+        echo -e "${RED}URL: $DOWNLOAD_URL${PLAIN}"
+        exit 1
+    fi
+    
+    # 解压 tar.gz
+    tar -xzf mtg.tar.gz
+    
+    # 移动二进制文件 (解压出来的目录名通常是 filename)
+    if [ -d "${FILENAME}" ]; then
+         mv "${FILENAME}/mtg" "$BIN_DIR/mtg"
+    else
+         # 尝试通配符匹配，以防万一
+         mv mtg-*-linux-*/mtg "$BIN_DIR/mtg"
+    fi
+    
+    chmod +x "$BIN_DIR/mtg"
+    rm -rf mtg.tar.gz "${FILENAME}" mtg-*-linux-*
+    echo -e "${GREEN}下载并安装成功: mtg${PLAIN}"
+
+    # Alpine 兼容性检查
+    if [[ "$OS" == "alpine" ]]; then
+        echo -e "${YELLOW}检测到 Alpine，安装 gcompat 兼容库...${PLAIN}"
+        apk add gcompat
+    fi
+
+    # 配置向导
+    read -p "请输入端口 (默认 443): " PORT
+    [ -z "$PORT" ] && PORT=443
+    
+    read -p "请输入伪装域名 (默认 azure.microsoft.com): " DOMAIN
+    [ -z "$DOMAIN" ] && DOMAIN="azure.microsoft.com"
+    
+    SECRET=$(generate_secret)
+    echo -e "${GREEN}生成的密钥: $SECRET${PLAIN}"
+
+    # 生成配置文件 (toml)
+    mkdir -p "$CONFIG_DIR"
+    cat > "$CONFIG_DIR/mtg.toml" <<EOF
+secret = "$SECRET"
+bind-to = "0.0.0.0:$PORT"
+
+[defense]
+anti-replay = true
+EOF
+
+    # 创建服务
+    create_service_mtg "$PORT" "$SECRET" "$DOMAIN"
+    
+    # 检查 mgt 是否能运行
+    "$BIN_DIR/mtg" --version >/dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}错误: mtg 二进制文件无法执行。可能是架构错误。${PLAIN}"
+    fi
+
+    # 检查服务状态
+    sleep 2
+    if [[ "$INIT_SYSTEM" == "systemd" ]]; then
+        if systemctl is-active --quiet mtg; then
+            echo -e "${GREEN}安装完成! 服务已启动。${PLAIN}"
+            show_info_mtg "$PORT" "$SECRET" "$DOMAIN"
+        else
+            echo -e "${RED}服务启动失败！日志如下：${PLAIN}"
+            journalctl -u mtg --no-pager -n 20
+        fi
+    else
+        show_info_mtg "$PORT" "$SECRET" "$DOMAIN"
+    fi
+}
+
+create_service_mtg() {
+    PORT=$1
+    SECRET=$2
+    DOMAIN=$3
+    
+    # 计算 Full Secret (ee + secret + domain_hex)
+    HEX_DOMAIN=$(echo -n "$DOMAIN" | od -A n -t x1 | tr -d ' \n')
+    FULL_SECRET="ee${SECRET}${HEX_DOMAIN}"
+    
+    # mtg v2 simple-run 语法: mtg simple-run [flags] <bind-to> <secret>
+    # 注意: secret 必须是包含域名的完整 secret (ee开头)
+    # flag -b 是 tcp-buffer 不是 bind，千万别用
+    
+    CMD_ARGS="simple-run -n 1.1.1.1 -t 30s -a 1mb 0.0.0.0:$PORT $FULL_SECRET"
+    EXEC_CMD="$BIN_DIR/mtg $CMD_ARGS"
+    
+    echo -e "${BLUE}正在创建服务...${PLAIN}"
+    
+    if [[ "$INIT_SYSTEM" == "systemd" ]]; then
+        cat > /etc/systemd/system/mtg.service <<EOF
+[Unit]
+Description=MTProto Proxy (Go - mtg)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=$EXEC_CMD
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+EOF
         systemctl daemon-reload
-    else
-        rc-update del "mtg-${service_type}" default >/dev/null 2>&1 || true
-        rm -f "/etc/init.d/mtg-${service_type}"
+        systemctl enable mtg
+        systemctl restart mtg
+        
+    elif [[ "$INIT_SYSTEM" == "openrc" ]]; then
+        cat > /etc/init.d/mtg <<EOF
+#!/sbin/openrc-run
+
+name="mtg"
+description="MTProto Proxy (Go)"
+command="$BIN_DIR/mtg"
+command_args="$CMD_ARGS"
+supervisor="supervise-daemon"
+respawn_delay=5
+respawn_max=0
+rc_ulimit="-n 65535"
+pidfile="/run/mtg.pid"
+output_log="/var/log/mtg.log"
+error_log="/var/log/mtg.log"
+
+depend() {
+    need net
+    after firewall
+}
+EOF
+        chmod +x /etc/init.d/mtg
+        rc-update add mtg default
+        rc-service mtg restart
+    fi
+}
+
+show_info_mtg() {
+    IP=$(get_public_ip)
+    HEX_DOMAIN=$(echo -n "$3" | od -A n -t x1 | tr -d ' \n')
+    FULL_SECRET="ee$2$HEX_DOMAIN"
+    
+    echo -e "=============================="
+    echo -e "      算 法 信 息 (Mtg)"
+    echo -e "=============================="
+    echo -e "IP: $IP"
+    echo -e "端口: $1"
+    echo -e "Secret: $FULL_SECRET"
+    echo -e "Domain: $3"
+    echo -e "=============================="
+    echo -e "tg://proxy?server=$IP&port=$1&secret=$FULL_SECRET"
+}
+
+# --- 服务管理逻辑 ---
+control_service() {
+    ACTION=$1
+    shift
+    TARGETS="$@"
+    
+    if [[ -z "$TARGETS" ]]; then
+        TARGETS="mtg mtp-python"
     fi
 
-    rm -f "$config_file"
-    echo "[$service_type] 配置文件与服务已删除。"
+    for SERVICE in $TARGETS; do
+        # 检查服务文件是否存在，避免报错
+        if [[ "$INIT_SYSTEM" == "systemd" ]]; then
+            if [ -f "/etc/systemd/system/${SERVICE}.service" ]; then
+                echo -e "${BLUE}${ACTION} ${SERVICE}...${PLAIN}"
+                systemctl $ACTION $SERVICE
+            fi
+        else
+            if [ -f "/etc/init.d/${SERVICE}" ]; then
+                echo -e "${BLUE}${ACTION} ${SERVICE}...${PLAIN}"
+                rc-service $SERVICE $ACTION
+            fi
+        fi
+    done
+}
 
-    # 清理主程序
-    if ! [ -f "${CONFIG_DIR}/config_secured" ] && ! [ -f "${CONFIG_DIR}/config_faketls" ]; then
-        echo
-        read -p "所有实例均已卸载。是否删除主程序和此脚本？ (y/N): " cleanup_confirm
-        if [ "$cleanup_confirm" = "y" ] || [ "$cleanup_confirm" = "Y" ]; then
-            rm -f "$BIN_PATH"
-            rm -rf "$CONFIG_DIR"
-            echo "清理完成。脚本自我删除..."
-            ( sleep 1 && rm -- "$0" ) & exit 0
+# --- 辅助函数：获取服务状态字符串 ---
+get_service_status_str() {
+    local service=$1
+    if [[ "$INIT_SYSTEM" == "systemd" ]]; then
+        if [ -f "/etc/systemd/system/${service}.service" ]; then
+            if systemctl is-active --quiet "$service"; then
+                echo -e "${GREEN}运行中${PLAIN}"
+            else
+                echo -e "${RED}已停止${PLAIN}"
+            fi
+        else
+            echo -e "${YELLOW}未安装${PLAIN}"
+        fi
+    else
+        # OpenRC
+        if [ -f "/etc/init.d/${service}" ]; then
+            if rc-service "$service" status 2>/dev/null | grep -q "started"; then
+                echo -e "${GREEN}运行中${PLAIN}"
+            else
+                echo -e "${RED}已停止${PLAIN}"
+            fi
+        else
+            echo -e "${YELLOW}未安装${PLAIN}"
         fi
     fi
 }
 
-show_info() {
-    service_type="$1"
-    config_file="${CONFIG_DIR}/config_${service_type}"
-    if ! [ -f "$config_file" ]; then echo "错误: [$service_type] 未配置。"; return; fi
+show_status() {
+    echo -e "=============================="
+    echo -e "       服 务 状 态"
+    echo -e "=============================="
+    echo -e "MTProxy (Go):     $(get_service_status_str mtg)"
+    echo -e "MTProxy (Python): $(get_service_status_str mtp-python)"
+    echo -e "=============================="
+}
 
-    . "$config_file"; MTP_PORT=${PORT}; MTP_SECRET=${SECRET}
-    IPV4=$(curl -s4 --connect-timeout 2 ip.sb || echo "无法获取")
-    
-    echo
-    echo "======= [${service_type}] MTProxy 链接 ======="
-    if [ -n "$MTP_PORT" ] && [ -n "$MTP_SECRET" ]; then
-        echo "地址: ${IPV4} : ${MTP_PORT}"
-        echo "密钥: ${MTP_SECRET}"
-        echo "tg://proxy?server=${IPV4}&port=${MTP_PORT}&secret=${MTP_SECRET}"
+# --- 修改配置逻辑 ---
+
+modify_mtg() {
+    # 读取当前配置
+    if [[ "$INIT_SYSTEM" == "systemd" ]]; then
+        CMD_LINE=$(grep "ExecStart" /etc/systemd/system/mtg.service 2>/dev/null)
     else
-         echo "配置信息不完整。"
+        CMD_LINE=$(grep "command_args" /etc/init.d/mtg 2>/dev/null)
     fi
+    
+    if [ -z "$CMD_LINE" ]; then
+        echo -e "${YELLOW}未检测到 MTG 服务配置。${PLAIN}"
+        return
+    fi
+
+    CUR_PORT=$(echo "$CMD_LINE" | sed -n 's/.*0\.0\.0\.0:\([0-9]*\).*/\1/p')
+    CUR_SECRET=$(echo "$CMD_LINE" | sed -n 's/.*\(ee[0-9a-fA-F]*\).*/\1/p')
+    
+    # 解析当前域名
+    CUR_DOMAIN=""
+    if [[ -n "$CUR_SECRET" ]]; then
+        DOMAIN_HEX=${CUR_SECRET:34}
+        if [[ -n "$DOMAIN_HEX" ]]; then
+             if command -v xxd >/dev/null 2>&1; then
+                 CUR_DOMAIN=$(echo "$DOMAIN_HEX" | xxd -r -p)
+             else
+                 ESCAPED_HEX=$(echo "$DOMAIN_HEX" | sed 's/../\\x&/g')
+                 CUR_DOMAIN=$(printf "$ESCAPED_HEX")
+             fi
+        fi
+    fi
+    [ -z "$CUR_DOMAIN" ] && CUR_DOMAIN="(解析失败)"
+
+    echo -e "当前配置 (Go): 端口=[${GREEN}$CUR_PORT${PLAIN}] 域名=[${GREEN}$CUR_DOMAIN${PLAIN}]"
+    
+    read -p "请输入新端口 (留空保持不变): " NEW_PORT
+    [ -z "$NEW_PORT" ] && NEW_PORT="$CUR_PORT"
+    
+    read -p "请输入新伪装域名 (留空保持不变): " NEW_DOMAIN
+    [ -z "$NEW_DOMAIN" ] && NEW_DOMAIN="$CUR_DOMAIN"
+    
+    if [[ "$NEW_PORT" == "$CUR_PORT" && "$NEW_DOMAIN" == "$CUR_DOMAIN" ]]; then
+        echo -e "${YELLOW}配置未变更。${PLAIN}"
+        return
+    fi
+    
+    echo -e "${BLUE}正在重新生成密钥和配置...${PLAIN}"
+    # Go版必须重新生成完整密钥，因为包含域名Hex
+    NEW_SECRET=$("$BIN_DIR/mtg" generate-secret --hex "$NEW_DOMAIN")
+    
+    # 复用创建服务函数来更新配置
+    create_service_mtg "$NEW_PORT" "$NEW_SECRET"
+    
+    # 重启服务
+    echo -e "${BLUE}正在重启服务...${PLAIN}"
+    if [[ "$INIT_SYSTEM" == "systemd" ]]; then
+        systemctl daemon-reload
+        systemctl restart mtg
+    else
+        rc-service mtg restart
+    fi
+    
+    echo -e "${GREEN}修改成功！新配置如下：${PLAIN}"
+    show_info_mtg "$NEW_PORT" "$NEW_SECRET" "$NEW_DOMAIN"
 }
 
-# 5. 菜单系统
-# =================================
-manage_service() {
-    service_type="$1"
-    while true; do
-        is_installed="未安装"; if [ -f "${CONFIG_DIR}/config_${service_type}" ]; then is_installed="已安装"; fi
-        running_status="未运行"; if is_running "$service_type"; then running_status="运行中"; fi
-        
-        echo
-        echo "=========== 管理 [${service_type}] 实例 ==========="
-        echo "   状态: ${is_installed} | 运行: ${running_status}"
-        echo "   1) 安装 / 修改配置"
-        echo "   2) 启动"
-        echo "   3) 停止"
-        echo "   4) 重启"
-        echo "   5) 查看链接"
-        echo "   6) 卸载"
-        echo "   0) 返回"
-        echo
-        read -p "选项: " opt
-        case "$opt" in
-            1) install_mtg "$service_type" ;;
-            2) start_service "$service_type" ;;
-            3) stop_service "$service_type" ;;
-            4) restart_service "$service_type" ;;
-            5) show_info "$service_type" ;;
-            6) uninstall_mtg "$service_type" ;;
-            0) return ;;
-            *) echo "无效选项" ;;
-        esac
-    done
+modify_python() {
+    if [ ! -f "$CONFIG_DIR/config.py" ]; then
+         echo -e "${YELLOW}未检测到 Python 版配置文件。${PLAIN}"
+         return
+    fi
+    
+    CUR_PORT=$(grep "PORT =" "$CONFIG_DIR/config.py" | awk '{print $3}')
+    CUR_DOMAIN=$(grep "TLS_DOMAIN =" "$CONFIG_DIR/config.py" | awk -F= '{print $2}' | tr -d ' "')
+    # 处理提取出的空白字符
+    CUR_PORT=$(echo $CUR_PORT | xargs)
+    CUR_DOMAIN=$(echo $CUR_DOMAIN | xargs)
+    
+    echo -e "当前配置 (Python): 端口=[${GREEN}$CUR_PORT${PLAIN}] 域名=[${GREEN}$CUR_DOMAIN${PLAIN}]"
+    
+    read -p "请输入新端口 (留空保持不变): " NEW_PORT
+    [ -z "$NEW_PORT" ] && NEW_PORT="$CUR_PORT"
+    
+    read -p "请输入新伪装域名 (留空保持不变): " NEW_DOMAIN
+    [ -z "$NEW_DOMAIN" ] && NEW_DOMAIN="$CUR_DOMAIN"
+    
+    if [[ "$NEW_PORT" == "$CUR_PORT" && "$NEW_DOMAIN" == "$CUR_DOMAIN" ]]; then
+        echo -e "${YELLOW}配置未变更。${PLAIN}"
+        return
+    fi
+    
+    echo -e "${BLUE}正在更新配置文件...${PLAIN}"
+    # 使用 sed 更新 config.py
+    # 更新 PORT
+    sed -i "s/PORT = .*/PORT = $NEW_PORT/" "$CONFIG_DIR/config.py"
+    # 更新 TLS_DOMAIN
+    sed -i "s/TLS_DOMAIN = .*/TLS_DOMAIN = \"$NEW_DOMAIN\"/" "$CONFIG_DIR/config.py"
+    
+    # 重启服务
+    echo -e "${BLUE}正在重启服务...${PLAIN}"
+    if [[ "$INIT_SYSTEM" == "systemd" ]]; then
+        systemctl restart mtp-python
+    else
+        rc-service mtp-python restart
+    fi
+    
+    # 重新提取 Secret 以显示完整链接
+    CUR_SECRET=$(grep "\"tg\":" "$CONFIG_DIR/config.py" | head -n 1 | awk -F: '{print $2}' | tr -d ' "', | xargs)
+    
+    echo -e "${GREEN}修改成功！新配置如下：${PLAIN}"
+    show_info_python "$NEW_PORT" "$CUR_SECRET" "$NEW_DOMAIN"
 }
 
-show_main_menu() {
-    echo
-    echo "===== MTProxy 管理脚本 (当前系统: ${INIT_SYSTEM}) ====="
-    echo "1) [secured] 实例"
-    echo "2) [faketls] 实例（推荐）"
-    echo "0) 退出"
-    read -p "选项: " opt
-    case "$opt" in
-        1) manage_service "secured" ;;
-        2) manage_service "faketls" ;;
-        0|q) exit 0 ;;
-        *) echo "无效选项" ;;
+modify_config() {
+    echo ""
+    echo -e "请选择要修改的服务:"
+    echo -e "1. MTProxy (Go 版)"
+    echo -e "2. MTProxy (Python 版)"
+    read -p "请选择 [1-2]: " m_choice
+    
+    case $m_choice in
+        1) modify_mtg ;;
+        2) modify_python ;;
+        *) echo -e "${RED}无效选择${PLAIN}" ;;
+    esac
+    
+    back_to_menu
+}
+
+# --- 删除配置逻辑 ---
+
+delete_mtg() {
+    echo -e "${RED}正在删除 MTProxy (Go 版)...${PLAIN}"
+    if [[ "$INIT_SYSTEM" == "systemd" ]]; then
+        systemctl stop mtg 2>/dev/null
+        systemctl disable mtg 2>/dev/null
+        rm -f /etc/systemd/system/mtg.service
+        systemctl daemon-reload
+    else
+        rc-service mtg stop 2>/dev/null
+        rc-update del mtg 2>/dev/null
+        rm -f /etc/init.d/mtg
+    fi
+    
+    rm -f "$BIN_DIR/mtg"
+    rm -f "$CONFIG_DIR/mtg.toml"
+    
+    echo -e "${GREEN}Go 版服务已删除。${PLAIN}"
+}
+
+delete_python() {
+    echo -e "${RED}正在删除 MTProxy (Python 版)...${PLAIN}"
+    if [[ "$INIT_SYSTEM" == "systemd" ]]; then
+        systemctl stop mtp-python 2>/dev/null
+        systemctl disable mtp-python 2>/dev/null
+        rm -f /etc/systemd/system/mtp-python.service
+        systemctl daemon-reload
+    else
+        rc-service mtp-python stop 2>/dev/null
+        rc-update del mtp-python 2>/dev/null
+        rm -f /etc/init.d/mtp-python
+    fi
+    
+    rm -f "$BIN_DIR/mtp-python"
+    rm -f "$CONFIG_DIR/config.py"
+    
+    echo -e "${GREEN}Python 版服务已删除。${PLAIN}"
+}
+
+delete_config() {
+    echo ""
+    echo -e "检测到现有配置:"
+    INSTALLED_MTG=0
+    INSTALLED_PYTHON=0
+    
+    if [[ -f "$BIN_DIR/mtg" ]]; then
+        echo -e "${GREEN}1. MTProxy (Go 版)${PLAIN}"
+        INSTALLED_MTG=1
+    else
+        echo -e "${YELLOW}1. MTProxy (Go 版) [未安装]${PLAIN}"
+    fi
+    
+    if [[ -f "$BIN_DIR/mtp-python" ]]; then
+        echo -e "${GREEN}2. MTProxy (Python 版)${PLAIN}"
+        INSTALLED_PYTHON=1
+    else
+        echo -e "${YELLOW}2. MTProxy (Python 版) [未安装]${PLAIN}"
+    fi
+    
+    echo -e "----------------------------------"
+    read -p "请选择要删除的服务 [1-2]: " d_choice
+    
+    case $d_choice in
+        1)
+            if [ $INSTALLED_MTG -eq 1 ]; then
+                delete_mtg
+            else
+                echo -e "${YELLOW}未安装，无需删除。${PLAIN}"
+            fi
+            ;;
+        2) 
+            if [ $INSTALLED_PYTHON -eq 1 ]; then
+                delete_python
+            else
+                echo -e "${YELLOW}未安装，无需删除。${PLAIN}"
+            fi
+            ;;
+        *) echo -e "${RED}无效选择${PLAIN}" ;;
+    esac
+    
+    back_to_menu
+}
+
+# --- 菜单系统 ---
+back_to_menu() {
+    echo ""
+    echo -e "${GREEN}操作完成。${PLAIN}"
+    read -n 1 -s -r -p "按任意键返回主菜单..."
+    menu
+}
+
+menu() {
+    check_sys
+    clear
+    status_mtg=$(get_service_status_str mtg)
+    status_python=$(get_service_status_str mtp-python)
+
+    echo -e "=================================="
+    echo -e "     MTProxy 综合管理脚本"
+    echo -e "=================================="
+    echo -e "系统信息: ${BLUE}${OS} (${INIT_SYSTEM})${PLAIN}"
+    echo -e "Go     版: ${status_mtg}"
+    echo -e "Python 版: ${status_python}"
+    echo -e "=================================="
+    echo -e "${GREEN}1.${PLAIN} 安装/配置 MTProxy (Go 版 - 推荐)"
+    echo -e "${GREEN}2.${PLAIN} 安装/配置 MTProxy (Python 版 - 备用)"
+    echo -e "----------------------------------"
+    echo -e "${GREEN}3.${PLAIN} 查看详细连接信息"
+    echo -e "${GREEN}4.${PLAIN} 启动服务"
+    echo -e "${GREEN}5.${PLAIN} 停止服务"
+    echo -e "${GREEN}6.${PLAIN} 重启服务"
+    echo -e "${GREEN}7.${PLAIN} 修改服务配置 (端口/域名)"
+    echo -e "${GREEN}8.${PLAIN} 删除服务配置 (选择删除)"
+    echo -e "----------------------------------"
+    echo -e "${GREEN}9.${PLAIN} 卸载服务"
+    echo -e "${GREEN}0.${PLAIN} 退出"
+    echo -e "=================================="
+    read -p "请选择 [0-9]: " choice
+    
+    case $choice in
+        1)
+            install_base_deps
+            install_mtg
+            back_to_menu
+            ;;
+        2)
+            install_base_deps
+            install_mtp_python
+            back_to_menu
+            ;;
+        3) 
+            echo ""
+            # --- 获取 Go 版信息 ---
+            if [[ -f "/etc/systemd/system/mtg.service" ]] || [[ -f "/etc/init.d/mtg" ]]; then
+                # 从服务文件中提取参数 (因为 mtg v2 simple-run 只有完整 secret，没有单独存 domain)
+                if [[ "$INIT_SYSTEM" == "systemd" ]]; then
+                    CMD_LINE=$(grep "ExecStart" /etc/systemd/system/mtg.service)
+                else
+                    CMD_LINE=$(grep "command_args" /etc/init.d/mtg)
+                fi
+                
+                # 提取端口 (匹配 0.0.0.0:xxxx)
+                PORT=$(echo "$CMD_LINE" | sed -n 's/.*0\.0\.0\.0:\([0-9]*\).*/\1/p')
+                
+                # 提取完整 Secret (以 ee 开头，后面跟一长串 16进制)
+                FULL_SECRET=$(echo "$CMD_LINE" | sed -n 's/.*\(ee[0-9a-fA-F]*\).*/\1/p')
+                
+                if [[ -n "$PORT" && -n "$FULL_SECRET" ]]; then
+                    # 尝试解析基础 Secret (前34位: ee + 32位secret) 和 域名Hex (35位开始)
+                    # MTProto Secret 通常是 16字节(32 hex chars)
+                    BASE_SECRET=${FULL_SECRET:2:32}
+                    DOMAIN_HEX=${FULL_SECRET:34}
+                    
+                    # 尝试解码域名 (如果有 Python3)
+                    if [[ -n "$DOMAIN_HEX" ]]; then
+                        # 尝试使用 xxd (如果存在)
+                        if command -v xxd >/dev/null 2>&1; then
+                             DOMAIN=$(echo "$DOMAIN_HEX" | xxd -r -p)
+                        else
+                             # 使用 bash内建 printf + sed 进行解码
+                             # 将 hex 转换为 \xHH\xHH 格式
+                             ESCAPED_HEX=$(echo "$DOMAIN_HEX" | sed 's/../\\x&/g')
+                             DOMAIN=$(printf "$ESCAPED_HEX")
+                        fi
+                    fi
+                    [ -z "$DOMAIN" ] && DOMAIN="(解析失败或未包含)"
+                    
+                    show_info_mtg "$PORT" "$BASE_SECRET" "$DOMAIN"
+                else
+                    echo -e "${YELLOW}无法从服务文件中提取 Go 版信息，请检查是否已安装。${PLAIN}"
+                fi
+            else
+                echo -e "${YELLOW}Go 版服务文件不存在。${PLAIN}"
+            fi
+            
+            echo ""
+            
+            # --- 获取 Python 版信息 ---
+            if [ -f "$CONFIG_DIR/config.py" ]; then
+                 PORT=$(grep "PORT =" "$CONFIG_DIR/config.py" | awk '{print $3}')
+                 # 提取 secret，处理可能的引号和逗号
+                 SECRET=$(grep "\"tg\":" "$CONFIG_DIR/config.py" | head -n 1 | awk -F: '{print $2}' | tr -d ' "',)
+                 DOMAIN=$(grep "TLS_DOMAIN =" "$CONFIG_DIR/config.py" | awk -F= '{print $2}' | tr -d ' "')
+                 
+                 # 去除可能的前后空格
+                 PORT=$(echo $PORT | xargs)
+                 SECRET=$(echo $SECRET | xargs)
+                 DOMAIN=$(echo $DOMAIN | xargs)
+                 
+                 show_info_python "$PORT" "$SECRET" "$DOMAIN"
+            else
+                 echo -e "${YELLOW}Python 版配置文件不存在。${PLAIN}"
+            fi
+            
+            back_to_menu 
+            ;;
+        4) control_service start; back_to_menu ;;
+        5) control_service stop; back_to_menu ;;
+        6) control_service restart; back_to_menu ;;
+        7) modify_config ;;
+        8) delete_config ;;
+        9)
+            # 卸载逻辑
+            echo -e "${RED}正在卸载...${PLAIN}"
+            if [[ "$INIT_SYSTEM" == "systemd" ]]; then
+                systemctl stop mtg mtp-python 2>/dev/null
+                systemctl disable mtg mtp-python 2>/dev/null
+                rm -f /etc/systemd/system/mtg.service /etc/systemd/system/mtp-python.service
+                systemctl daemon-reload
+            else
+                rc-service mtg stop 2>/dev/null
+                rc-service mtp-python stop 2>/dev/null
+                rc-update del mtg 2>/dev/null
+                rc-update del mtp-python 2>/dev/null
+                rm -f /etc/init.d/mtg /etc/init.d/mtp-python
+            fi
+            
+            # 删除工作目录 (包含 bin, config, logs)
+            # 先离开该目录，防止因占用导致删除失败
+            cd /tmp
+            rm -rf "$WORKDIR"
+            
+            echo -e "${GREEN}卸载完成。${PLAIN}"
+            echo -e "${RED}正在删除脚本本身...${PLAIN}"
+            
+            if [ -f "$SCRIPT_PATH" ]; then
+                rm -f "$SCRIPT_PATH"
+                echo -e "${GREEN}脚本文件已删除: $SCRIPT_PATH${PLAIN}"
+            else
+                echo -e "${YELLOW}警告: 无法自动删除脚本文件，请手动删除。${PLAIN}"
+            fi
+            
+            echo -e "${GREEN}再见!${PLAIN}"
+            exit 0
+            ;;
+        0) exit 0 ;;
+        *) echo "无效选择"; sleep 1; menu ;;
     esac
 }
 
-main() {
-    check_init_system
-    check_deps
-    while true; do show_main_menu; done
-}
-
-main
+# 入口
+if [[ $# > 0 ]]; then
+    CMD=$1
+    shift
+    case $CMD in
+        install_go) check_sys && install_base_deps && install_mtg ;;
+        install_python) check_sys && install_base_deps && install_mtp_python ;;
+        start) check_sys && control_service start ;;
+        stop) check_sys && control_service stop ;;
+        restart) check_sys && control_service restart ;;
+        status) check_sys && show_status ;;
+        *) menu ;;
+    esac
+else
+    menu
+fi
