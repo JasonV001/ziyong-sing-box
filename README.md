@@ -64,4 +64,4 @@ sudo bash -c "$(curl -sSL https://raw.githubusercontent.com/JasonV001/ziyong-sin
 
 # 方法2: 下载后运行
 wget https://raw.githubusercontent.com/JasonV001/ziyong-sing-box/refs/heads/main/swap.sh
-sudo bash swap_install.sh
+sudo bash swap.sh
