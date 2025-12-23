@@ -46,3 +46,22 @@ nohup "/usr/local/bin/anytls-server" -l "0.0.0.0:端口" -p "anytls密码"
 😆
 ```
 </details>
+# NAT VPS Swap一键配置工具
+
+一个自动为NAT VPS配置Swap交换空间的Shell脚本。
+
+## 功能特性
+- 自动检测系统信息
+- 交互式Swap大小选择
+- 智能磁盘空间检查
+- 自动优化系统参数
+- 安全删除功能
+
+## 快速开始
+```bash
+# 方法1: 直接运行
+sudo bash -c "$(curl -sSL https://raw.githubusercontent.com/yourusername/swap-tool/main/swap_install.sh)"
+
+# 方法2: 下载后运行
+wget https://raw.githubusercontent.com/yourusername/swap-tool/main/swap_install.sh
+sudo bash swap_install.sh
