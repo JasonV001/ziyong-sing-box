@@ -60,8 +60,8 @@ nohup "/usr/local/bin/anytls-server" -l "0.0.0.0:端口" -p "anytls密码"
 ## 快速开始
 ```bash
 # 方法1: 直接运行
-sudo bash -c "$(curl -sSL https://raw.githubusercontent.com/yourusername/swap-tool/main/swap_install.sh)"
+sudo bash -c "$(curl -sSL https://raw.githubusercontent.com/JasonV001/ziyong-sing-box/main/swap_install.sh)"
 
 # 方法2: 下载后运行
-wget https://raw.githubusercontent.com/yourusername/swap-tool/main/swap_install.sh
+wget https://raw.githubusercontent.com/JasonV001/ziyong-sing-box/main/swap_install.sh
 sudo bash swap_install.sh
